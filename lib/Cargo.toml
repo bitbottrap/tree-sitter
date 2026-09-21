@@ -40,6 +40,9 @@ workspace = true
 default = [ "std" ]
 std = [ "regex/std", "regex/perf" ]
 wasm = [ "std", "wasmtime-c-api" ]
+# Build option: instrument every keyword DFA consultation into the binary
+# trace file named by $TREE_SITTER_KEYWORD_TRACE (see lib/src/keyword_trace.h).
+keyword-trace = []
 
 [dependencies]
 regex = { default-features = false, features = [ "unicode" ], version = "1.12.3" }

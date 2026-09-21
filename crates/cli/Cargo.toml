@@ -33,6 +33,9 @@ name = "benchmark"
 default = [ "qjs-rt" ]
 qjs-rt = [ "tree-sitter-generate/qjs-rt" ]
 wasm = [ "tree-sitter/wasm", "tree-sitter-loader/wasm" ]
+# Build option: record every keyword DFA consultation made while parsing
+# (see lib/src/keyword_trace.h). Output file: $TREE_SITTER_KEYWORD_TRACE.
+keyword-trace = [ "tree-sitter/keyword-trace" ]
 
 [dependencies]
 ansi_colours.workspace = true

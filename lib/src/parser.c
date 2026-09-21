@@ -7,6 +7,7 @@
 #include "./array.h"
 #include "./error_costs.h"
 #include "./get_changed_ranges.h"
+#include "./keyword_trace.h"
 #include "./language.h"
 #include "./length.h"
 #include "./lexer.h"
@@ -346,12 +347,68 @@ static bool ts_parser__call_main_lex_fn(TSParser *self, TSLexerMode lex_mode) {
   }
 }
 
-static bool ts_parser__call_keyword_lex_fn(TSParser *self) {
+// The dispatch state `ts_parser__call_keyword_lex_fn` passes for a word of
+// this byte length: the length itself under the bucket dispatcher, 0 (the
+// full DFA) otherwise. Factored out so the trace instrumentation can record
+// the state a candidate WOULD have used even when the walk was skipped.
+static TSStateId ts_parser__keyword_dispatch_state(
+  const TSParser *self,
+  uint32_t word_len
+) {
+  return self->language->abi_version >= LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS &&
+           self->language->keyword_bucket_count > 0
+    ? (TSStateId)word_len
+    : 0;
+}
+
+static bool ts_parser__call_keyword_lex_fn(TSParser *self, uint32_t word_len) {
+  // When the language dispatches over per-length keyword DFAs, pass the word's
+  // byte length in the `state` argument so the dispatcher enters the bucket
+  // holding exactly the keywords of that length. `word_len` is bounded by
+  // `max_word_length` (the over-length skip above runs first) and buckets only
+  // exist when that bound is set, so it always fits in TSStateId. Otherwise
+  // (a single full keyword DFA, or a parser predating the fields) pass 0 -- the
+  // full-DFA entry. The same state works for Wasm: the module's own
+  // `ts_lex_keywords` is the same dispatcher, and `keyword_bucket_count` is
+  // copied out of the module's language object only when its ABI carries the
+  // field (older modules read 0 -> state 0 -> the module's full DFA).
+  TSStateId state = ts_parser__keyword_dispatch_state(self, word_len);
+  bool accepted;
+#ifdef TREE_SITTER_KEYWORD_TRACE
+  // Capture the walk's ENTRY position before it runs. The keyword DFA skips
+  // leading whitespace with advance(skip=true), which moves
+  // token_start_position forward; reading it after the walk would record the
+  // post-skip position and shift the replayed word by the skipped bytes (the
+  // dispatcher's whitespace pre-check then sees the wrong entry lookahead).
+  // The caller reset the lexer to the word's true first byte just before
+  // calling, so this is the faithful replay start.
+  uint32_t trace_start_byte = self->lexer.current_position.bytes;
+  uint32_t trace_start_row = self->lexer.current_position.extent.row;
+  uint32_t trace_start_col = self->lexer.current_position.extent.column;
+#endif
   if (ts_language_is_wasm(self->language)) {
-    return ts_wasm_store_call_lex_keyword(self->wasm_store, 0);
+    accepted = ts_wasm_store_call_lex_keyword(self->wasm_store, state);
   } else {
-    return self->language->keyword_lex_fn(&self->lexer.data, 0);
+    accepted = self->language->keyword_lex_fn(&self->lexer.data, state);
   }
+#ifdef TREE_SITTER_KEYWORD_TRACE
+  // Build option (-DTREE_SITTER_KEYWORD_TRACE): record this consultation --
+  // the word's start position (the walk's entry, captured above), its byte
+  // length, the dispatch state, and the walk's outcome. The standalone replay
+  // harness (eval/keyword-dfs) re-runs exactly these walks against the DFA in
+  // a parser .so. Active only when $TREE_SITTER_KEYWORD_TRACE names an output
+  // file; zero cost otherwise.
+  ts_keyword_trace_consult(
+    trace_start_byte,
+    trace_start_row,
+    trace_start_col,
+    word_len,
+    state,
+    accepted,
+    self->lexer.data.result_symbol
+  );
+#endif
+  return accepted;
 }
 
 static void ts_parser__external_scanner_create(
@@ -651,21 +708,158 @@ static Subtree ts_parser__lex(
     if (found_external_token) {
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
-      uint32_t end_byte = self->lexer.token_end_position.bytes;
-      ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
-      ts_lexer_start(&self->lexer);
+      // When the language advertises a keyword length bound
+      // (`max_word_length` > 0), a word token longer than any keyword cannot
+      // match one, so skip the reset + re-lex entirely. `size` (captured
+      // above) is the word's byte length. The field is read only from
+      // LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS on -- older parsers' structs end
+      // before it, so reading it unguarded would look at adjacent memory.
+      // Below that version (or when the bound is 0) the consultation always
+      // runs, as originally.
+      bool within_keyword_bound =
+        self->language->abi_version < LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS ||
+        self->language->max_word_length == 0 ||
+        size.bytes <= self->language->max_word_length;
+#ifdef TREE_SITTER_KEYWORD_TRACE
+      if (!within_keyword_bound) {
+        ts_keyword_trace_skip(
+          self->lexer.token_start_position.bytes,
+          size.bytes
+        );
+      }
+      // EXPERIMENT (consultation-test ordering): when the trace sink is open,
+      // run the instrumented consultation below instead of the stock one. It
+      // makes the IDENTICAL promotion decision (same is_keyword, same symbol)
+      // but records, for every keyword candidate, which promotion tests ran,
+      // each one's outcome, and the cycles each cost. With
+      // $TREE_SITTER_KEYWORD_EVAL_ALL=1 every test runs for every candidate --
+      // the DFA walk even when the bound rejects, the post-accept parse-table
+      // lookups even when the walk rejects -- producing the exact
+      // counterfactual matrix from which the analysis can price ANY test
+      // order. Without it the tests run in the current source order and
+      // short-circuit exactly as stock does, so the trace shows what the
+      // current order actually costs.
+      if (ts_keyword_trace_enabled()) {
+        const bool eval_all = ts_keyword_trace_eval_all() != 0;
+        const uint32_t end_byte = self->lexer.token_end_position.bytes;
+        // Calibrate the counter-read cost once per candidate: every bracketed
+        // measurement below includes one extra read, which the analysis
+        // subtracts via ts_cycle_elapsed.
+        uint64_t o0 = ts_cycle_counter();
+        uint64_t overhead = ts_cycle_counter() - o0;
+        const uint64_t t_total = ts_cycle_counter();
+        uint64_t cyc[6] = {0, 0, 0, 0, 0, 0};
+        uint8_t evaluated = 0, results = 0;
 
-      is_keyword = ts_parser__call_keyword_lex_fn(self);
+        // Test 0 -- the over-length bound. Recomputed here (three comparisons
+        // on already-loaded fields, no side effects -- identical to the value
+        // computed above, which still drives the skip record and the stock
+        // path) so the timed span covers the real test, not a re-read.
+        uint64_t t0 = ts_cycle_counter();
+        const bool r_bound =
+          self->language->abi_version < LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS ||
+          self->language->max_word_length == 0 ||
+          size.bytes <= self->language->max_word_length;
+        cyc[0] = ts_cycle_elapsed(t0, overhead);
+        evaluated |= KWTEST_BOUND;
+        if (r_bound) results |= KWTEST_BOUND;
 
-      if (
-        is_keyword &&
-        self->lexer.token_end_position.bytes == end_byte &&
-        (
-          ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
-        )
-      ) {
-        symbol = self->lexer.data.result_symbol;
+        bool r_walk = false, r_byte_eq = false, r_actions = false, r_reserved = false;
+        if (r_bound || eval_all) {
+          // Test 1 -- consultation setup: reset the lexer to the word's first
+          // byte and fetch its first chunk. Always "passes"; timed because its
+          // cost rides with any order that runs the walk.
+          uint64_t t1 = ts_cycle_counter();
+          ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+          ts_lexer_start(&self->lexer);
+          cyc[1] = ts_cycle_elapsed(t1, overhead);
+          evaluated |= KWTEST_RESET;
+          results |= KWTEST_RESET;
+
+          // Test 2 -- the keyword DFA walk (dispatcher + bucket or full DFA).
+          uint64_t t2 = ts_cycle_counter();
+          r_walk = ts_parser__call_keyword_lex_fn(self, size.bytes);
+          cyc[2] = ts_cycle_elapsed(t2, overhead);
+          evaluated |= KWTEST_WALK;
+          if (r_walk) results |= KWTEST_WALK;
+
+          if (r_walk || eval_all) {
+            // Test 3 -- the walked token must end exactly at the word's end
+            // (a keyword prefix of a longer word does not count).
+            uint64_t t3 = ts_cycle_counter();
+            r_byte_eq = self->lexer.token_end_position.bytes == end_byte;
+            cyc[3] = ts_cycle_elapsed(t3, overhead);
+            evaluated |= KWTEST_BYTE_EQ;
+            if (r_byte_eq) results |= KWTEST_BYTE_EQ;
+
+            if (r_byte_eq || eval_all) {
+              // Test 4 -- the walked symbol is actionable in this parse state.
+              uint64_t t4 = ts_cycle_counter();
+              r_actions = ts_language_has_actions(
+                self->language, parse_state, self->lexer.data.result_symbol
+              );
+              cyc[4] = ts_cycle_elapsed(t4, overhead);
+              evaluated |= KWTEST_ACTIONS;
+              if (r_actions) results |= KWTEST_ACTIONS;
+
+              // Test 5 -- ... or is a reserved word here. Stock skips it when
+              // test 4 passed (the OR short-circuits); eval-all runs both.
+              if (!r_actions || eval_all) {
+                uint64_t t5 = ts_cycle_counter();
+                r_reserved = ts_language_is_reserved_word(
+                  self->language, parse_state, self->lexer.data.result_symbol
+                );
+                cyc[5] = ts_cycle_elapsed(t5, overhead);
+                evaluated |= KWTEST_RESERVED;
+                if (r_reserved) results |= KWTEST_RESERVED;
+              }
+            }
+          }
+        }
+
+        // The decision, identical to the stock block below: the leaf is
+        // keyword-marked when the walk ran (within bound) and accepted, and
+        // the symbol is replaced only when every promotion test passes.
+        is_keyword = r_bound && r_walk;
+        if (
+          is_keyword &&
+          r_byte_eq &&
+          (r_actions || r_reserved)
+        ) {
+          symbol = self->lexer.data.result_symbol;
+        }
+
+        ts_keyword_trace_eval(
+          self->lexer.token_start_position.bytes,
+          size.bytes,
+          ts_parser__keyword_dispatch_state(self, size.bytes),
+          evaluated,
+          results,
+          r_walk,
+          eval_all,
+          overhead,
+          cyc,
+          ts_cycle_counter() - t_total
+        );
+      } else
+#endif
+      if (within_keyword_bound) {
+        uint32_t end_byte = self->lexer.token_end_position.bytes;
+        ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+        ts_lexer_start(&self->lexer);
+
+        is_keyword = ts_parser__call_keyword_lex_fn(self, size.bytes);
+
+        if (
+          is_keyword &&
+          self->lexer.token_end_position.bytes == end_byte &&
+          (
+            ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
+            ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
+          )
+        ) {
+          symbol = self->lexer.data.result_symbol;
+        }
       }
     }
 

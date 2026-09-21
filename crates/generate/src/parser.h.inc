@@ -149,6 +149,25 @@ struct TSLanguage {
   const TSMapSlice *supertype_map_slices;
   const TSSymbol *supertype_map_entries;
   TSLanguageMetadata metadata;
+  // The byte length of the longest keyword matchable by `keyword_lex_fn`, or 0
+  // when no such bound is known. A grammar whose keywords are all fixed-length
+  // literals with a word-start-disjoint separator reports its longest literal;
+  // a grammar with a variable-length keyword (m68k's `l[0-9]+`) or a separator
+  // that can fire at the start of a word reports 0, because such a match has no
+  // length bound. When > 0 the parser may skip the keyword consultation outright
+  // for a word token longer than it, since no keyword can match a longer word.
+  // Appended last so parsers predating the field leave it zero.
+  uint16_t max_word_length;
+  // The number of per-byte-length keyword DFAs that `keyword_lex_fn` dispatches
+  // over, or 0 when it is a single full keyword DFA (parsers predating keyword
+  // bucketing, and any grammar whose keyword DFA admits no byte-length
+  // analysis). When > 0, `keyword_lex_fn` expects the consulted word's byte
+  // length in its `state` argument and enters the DFA holding exactly the
+  // keywords of that length; length 0 -- and any length with no bucket -- falls
+  // back to the full keyword DFA, so a caller that knows no length can pass 0
+  // and get the pre-bucketing behavior. Appended last, after
+  // `max_word_length`.
+  uint16_t keyword_bucket_count;
 };
 
 static inline bool set_contains(const TSCharacterRange *ranges, uint32_t len, int32_t lookahead) {

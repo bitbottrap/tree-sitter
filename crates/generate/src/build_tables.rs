@@ -38,6 +38,31 @@ pub struct Tables {
     pub main_lex_table: LexTable,
     pub keyword_lex_table: LexTable,
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
+    /// Keyword length buckets: longest keyword byte-length, 0 when no length
+    /// bound is sound. See `build_lex_table::compute_keyword_depths`.
+    pub max_word_length: u16,
+    /// Keyword length buckets: one DFA per keyword
+    /// byte-length, `(length, table)`, sorted by length. Empty only when the
+    /// byte-length analysis declines the grammar. The runtime dispatches a
+    /// consultation to the bucket for the word's length, so a walk can only
+    /// accept at exactly the word's byte length.
+    /// See `build_lex_table::build_keyword_buckets`.
+    pub keyword_bucket_tables: Vec<(u16, LexTable)>,
+    /// Keyword length buckets: DFA over un-bucketed
+    /// keywords; the dispatcher's operative fallback. See
+    /// `build_lex_table::build_keyword_buckets`.
+    pub keyword_residual_table: LexTable,
+    /// Keyword length buckets: first characters on
+    /// which the root separator can fire (separator-start ∩ word-start). Empty
+    /// for disjoint grammars; non-empty => the dispatcher peeks the first
+    /// character and routes such words to the full DFA. See
+    /// `build_lex_table::compute_keyword_depths`.
+    pub keyword_peek_set: CharacterSet,
+    /// Keyword length buckets: minimum byte length at which the
+    /// residual (reduced) DFA can accept; 0 = no known bound. The dispatcher
+    /// answers gap lengths below it with a bare `return false`. See
+    /// `build_lex_table::build_keyword_buckets`.
+    pub keyword_residual_min: u16,
 }
 
 #[expect(
@@ -70,6 +95,13 @@ pub fn build_tables(
     let token_conflict_map = TokenConflictMap::new(lexical_grammar, following_tokens);
     let coincident_token_index =
         CoincidentTokenIndex::new(&parse_table, lexical_grammar, syntax_grammar.word_token);
+    // Build option (eval/keyword-dfs): see build_lex_table's KWCREATE block.
+    // Times the keyword-identification pass (which decides which tokens join
+    // the keyword DFA) so the creation harness can attribute DFA-build cost
+    // to its inputs. Unset => zero overhead.
+    let kw_create_trace =
+        std::env::var("TREE_SITTER_KEYWORD_CREATE_TRACE").is_ok_and(|v| v == "1");
+    let kw_t = std::time::Instant::now();
     let keywords = identify_keywords(
         lexical_grammar,
         syntax_grammar.word_token,
@@ -77,6 +109,13 @@ pub fn build_tables(
         &coincident_token_index,
         str_pool,
     );
+    if kw_create_trace {
+        eprintln!(
+            "KWCREATE identify {} keywords={}",
+            kw_t.elapsed().as_nanos(),
+            keywords.len(),
+        );
+    }
     populate_error_state(
         &mut parse_table,
         syntax_grammar,
@@ -132,6 +171,11 @@ pub fn build_tables(
         main_lex_table: lex_tables.main_lex_table,
         keyword_lex_table: lex_tables.keyword_lex_table,
         large_character_sets: lex_tables.large_character_sets,
+        max_word_length: lex_tables.max_word_length,
+        keyword_bucket_tables: lex_tables.keyword_bucket_tables,
+        keyword_residual_table: lex_tables.keyword_residual_table,
+        keyword_peek_set: lex_tables.keyword_peek_set,
+        keyword_residual_min: lex_tables.keyword_residual_min,
     })
 }
 

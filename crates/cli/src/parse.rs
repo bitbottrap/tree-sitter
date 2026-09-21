@@ -294,6 +294,31 @@ pub fn parse_file_at_path(
     parser.set_language(language)?;
     let mut source_code = fs::read(path).with_context(|| format!("Error reading {name:?}"))?;
 
+    // Build option (keyword-trace): announce this file to the core's
+    // keyword-consultation trace sink so the consult records that follow
+    // are attributed to it (and to the grammar that parsed it). No-op unless
+    // the feature is compiled in AND $TREE_SITTER_KEYWORD_TRACE names an
+    // output file.
+    #[cfg(feature = "keyword-trace")]
+    {
+        use std::ffi::CString;
+        unsafe extern "C" {
+            fn ts_keyword_trace_begin_file(
+                path: *const std::ffi::c_char,
+                grammar_name: *const std::ffi::c_char,
+            );
+        }
+        if let Ok(cpath) = CString::new(path.as_os_str().as_encoded_bytes()) {
+            let cname = language.name().and_then(|n| CString::new(n).ok());
+            unsafe {
+                ts_keyword_trace_begin_file(
+                    cpath.as_ptr(),
+                    cname.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                )
+            };
+        }
+    }
+
     // Render an HTML graph if `--debug-graph` was passed
     if opts.debug_graph {
         _log_session = Some(util::log_graphs(parser, "log.html", opts.open_log)?);

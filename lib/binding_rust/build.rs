@@ -23,6 +23,15 @@ fn main() {
             .include(env::var("DEP_WASMTIME_C_API_INCLUDE").unwrap());
     }
 
+    // Build option: keyword-DFS consultation tracing (see
+    // lib/src/keyword_trace.h). Enabled via the `keyword-trace` cargo
+    // feature; the sink itself activates at runtime only when
+    // $TREE_SITTER_KEYWORD_TRACE names a file.
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_KEYWORD_TRACE");
+    if env::var("CARGO_FEATURE_KEYWORD_TRACE").is_ok() {
+        config.define("TREE_SITTER_KEYWORD_TRACE", "");
+    }
+
     let manifest_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let include_path = manifest_path.join("include");
     let src_path = manifest_path.join("src");
