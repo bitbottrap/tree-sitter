@@ -166,6 +166,12 @@ typedef struct {
   int32_t supertype_map_slices;
   int32_t supertype_map_entries;
   TSLanguageMetadata metadata;
+  // Trailing fields, present in the module's language object only when its ABI
+  // version is at least LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS. Read only when
+  // the version gate holds -- for older modules these bytes are past the end of
+  // its struct.
+  uint16_t max_word_length;
+  uint16_t keyword_bucket_count;
 } LanguageInWasmMemory;
 
 // LexerInWasmMemory - The memory layout of a `TSLexer` when compiled to wasm32.
@@ -1654,6 +1660,16 @@ const TSLanguage *ts_wasm_store_load_language(
       );
       if (!valid_wasm_memory) goto invalid_language_memory;
     }
+  }
+
+  // The trailing capability fields exist in the module's language object only
+  // from LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS on; older modules end at
+  // `metadata`, so their reconstructed language keeps the calloc-zeroed
+  // defaults (no buckets -> the runtime passes state 0 -> the module's full
+  // keyword DFA).
+  if (language->abi_version >= LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS) {
+    language->max_word_length = wasm_language.max_word_length;
+    language->keyword_bucket_count = wasm_language.keyword_bucket_count;
   }
 
   if (language->external_token_count > 0) {

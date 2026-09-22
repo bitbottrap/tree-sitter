@@ -346,12 +346,39 @@ static bool ts_parser__call_main_lex_fn(TSParser *self, TSLexerMode lex_mode) {
   }
 }
 
-static bool ts_parser__call_keyword_lex_fn(TSParser *self) {
+// The dispatch state `ts_parser__call_keyword_lex_fn` passes for a word of
+// this byte length: the length itself under the bucket dispatcher, 0 (the
+// full DFA) otherwise. Factored out so the trace instrumentation can record
+// the state a candidate WOULD have used even when the walk was skipped.
+static TSStateId ts_parser__keyword_dispatch_state(
+  const TSParser *self,
+  uint32_t word_len
+) {
+  return self->language->abi_version >= LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS &&
+           self->language->keyword_bucket_count > 0
+    ? (TSStateId)word_len
+    : 0;
+}
+
+static bool ts_parser__call_keyword_lex_fn(TSParser *self, uint32_t word_len) {
+  // When the language dispatches over per-length keyword DFAs, pass the word's
+  // byte length in the `state` argument so the dispatcher enters the bucket
+  // holding exactly the keywords of that length. `word_len` is bounded by
+  // `max_word_length` (the over-length skip above runs first) and buckets only
+  // exist when that bound is set, so it always fits in TSStateId. Otherwise
+  // (a single full keyword DFA, or a parser predating the fields) pass 0 -- the
+  // full-DFA entry. The same state works for Wasm: the module's own
+  // `ts_lex_keywords` is the same dispatcher, and `keyword_bucket_count` is
+  // copied out of the module's language object only when its ABI carries the
+  // field (older modules read 0 -> state 0 -> the module's full DFA).
+  TSStateId state = ts_parser__keyword_dispatch_state(self, word_len);
+  bool accepted;
   if (ts_language_is_wasm(self->language)) {
-    return ts_wasm_store_call_lex_keyword(self->wasm_store, 0);
+    accepted = ts_wasm_store_call_lex_keyword(self->wasm_store, state);
   } else {
-    return self->language->keyword_lex_fn(&self->lexer.data, 0);
+    accepted = self->language->keyword_lex_fn(&self->lexer.data, state);
   }
+  return accepted;
 }
 
 static void ts_parser__external_scanner_create(
@@ -651,21 +678,35 @@ static Subtree ts_parser__lex(
     if (found_external_token) {
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
-      uint32_t end_byte = self->lexer.token_end_position.bytes;
-      ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
-      ts_lexer_start(&self->lexer);
+      // When the language advertises a keyword length bound
+      // (`max_word_length` > 0), a word token longer than any keyword cannot
+      // match one, so skip the reset + re-lex entirely. `size` (captured
+      // above) is the word's byte length. The field is read only from
+      // LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS on -- older parsers' structs end
+      // before it, so reading it unguarded would look at adjacent memory.
+      // Below that version (or when the bound is 0) the consultation always
+      // runs.
+      bool within_keyword_bound =
+        self->language->abi_version < LANGUAGE_VERSION_WITH_KEYWORD_BUCKETS ||
+        self->language->max_word_length == 0 ||
+        size.bytes <= self->language->max_word_length;
+      if (within_keyword_bound) {
+        uint32_t end_byte = self->lexer.token_end_position.bytes;
+        ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+        ts_lexer_start(&self->lexer);
 
-      is_keyword = ts_parser__call_keyword_lex_fn(self);
+        is_keyword = ts_parser__call_keyword_lex_fn(self, size.bytes);
 
-      if (
-        is_keyword &&
-        self->lexer.token_end_position.bytes == end_byte &&
-        (
-          ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
-        )
-      ) {
-        symbol = self->lexer.data.result_symbol;
+        if (
+          is_keyword &&
+          self->lexer.token_end_position.bytes == end_byte &&
+          (
+            ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
+            ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
+          )
+        ) {
+          symbol = self->lexer.data.result_symbol;
+        }
       }
     }
 
