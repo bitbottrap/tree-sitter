@@ -261,6 +261,9 @@ static void ts_lexer__do_advance(Lexer *self, bool skip) {
 static void ts_lexer__advance(TSLexer *_self, bool skip) {
   Lexer *self = (Lexer *)_self;
   if (!self->chunk) return;
+  if (self->lookahead_size) {
+    self->token_codepoint_count = skip ? 0 : self->token_codepoint_count + 1;
+  }
 
   if (skip) {
     LOG("skip", self->data.lookahead)
@@ -296,6 +299,7 @@ static void ts_lexer__advance(TSLexer *_self, bool skip) {
 // times if a longer match is found later.
 static void ts_lexer__mark_end(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
+  self->token_end_codepoint_count = self->token_codepoint_count;
   if (!ts_lexer__eof(&self->data)) {
     // If the lexer is right at the beginning of included range,
     // then the token should be considered to end at the *end* of the
@@ -430,6 +434,8 @@ void ts_lexer_reset(Lexer *self, Length position) {
 void ts_lexer_start(Lexer *self) {
   self->token_start_position = self->current_position;
   self->token_end_position = LENGTH_UNDEFINED;
+  self->token_codepoint_count = 0;
+  self->token_end_codepoint_count = 0;
   self->data.result_symbol = 0;
   self->did_get_column = false;
   if (!ts_lexer__eof(&self->data)) {

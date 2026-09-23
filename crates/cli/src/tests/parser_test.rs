@@ -30,6 +30,227 @@ use crate::{
 };
 
 #[test]
+fn test_keyword_buckets_codepoint_count() {
+    struct Utf32Le;
+    impl Decode for Utf32Le {
+        fn decode(bytes: &[u8]) -> (i32, u32) {
+            bytes.get(..4).map_or((-1, 0), |bytes| {
+                (i32::from_le_bytes(bytes.try_into().unwrap()), 4)
+            })
+        }
+    }
+    let (name, code) = generate_parser(
+        r#"{
+            "name": "keyword_bucket_codepoints",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "source_file": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "if"},
+                    {"type": "STRING", "value": "else"},
+                    {"type": "STRING", "value": "\u00e9"},
+                    {"type": "STRING", "value": "\ud801\udcdc"}
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z\\x{e9}\\x{104dc}]+"}
+            }
+        }"#,
+    )
+    .unwrap();
+    let language = get_test_language(&name, &code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for word in ["if", "else", "\u{e9}", "\u{104dc}"] {
+        let utf8 = parser.parse(word, None).unwrap();
+        assert_eq!(utf8.root_node().child(0).unwrap().kind(), word);
+        let utf16_le = word.encode_utf16().map(u16::to_le).collect::<Vec<_>>();
+        let tree = parser.parse_utf16_le(&utf16_le, None).unwrap();
+        assert_eq!(tree.root_node().child(0).unwrap().kind(), word);
+        let utf16_be = word.encode_utf16().map(u16::to_be).collect::<Vec<_>>();
+        let tree = parser.parse_utf16_be(&utf16_be, None).unwrap();
+        assert_eq!(tree.root_node().child(0).unwrap().kind(), word);
+        let utf32 = word
+            .chars()
+            .flat_map(|character| (character as u32).to_le_bytes())
+            .collect::<Vec<_>>();
+        let tree = parser
+            .parse_custom_encoding::<Utf32Le, _, _>(&mut |offset, _| &utf32[offset..], None, None)
+            .unwrap();
+        assert_eq!(tree.root_node().child(0).unwrap().kind(), word);
+        let padded = format!(" \n {word} ");
+        let tree = parser.parse(&padded, None).unwrap();
+        assert_eq!(tree.root_node().child(0).unwrap().kind(), word);
+    }
+    let mut old_tree = parser.parse("if", None).unwrap();
+    old_tree.edit(&InputEdit {
+        start_byte: 0,
+        old_end_byte: 2,
+        new_end_byte: 4,
+        start_position: Point::new(0, 0),
+        old_end_position: Point::new(0, 2),
+        new_end_position: Point::new(0, 4),
+    });
+    let incremental = parser.parse("else", Some(&old_tree)).unwrap();
+    assert_eq!(incremental.root_node().child(0).unwrap().kind(), "else");
+    parser
+        .set_included_ranges(&[
+            Range {
+                start_byte: 0,
+                end_byte: 1,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(0, 1),
+            },
+            Range {
+                start_byte: 6,
+                end_byte: 7,
+                start_point: Point::new(0, 6),
+                end_point: Point::new(0, 7),
+            },
+        ])
+        .unwrap();
+    let tree = parser.parse("i_____f", None).unwrap();
+    assert_eq!(tree.root_node().child(0).unwrap().kind(), "if");
+}
+
+#[test]
+fn test_keyword_buckets_match_full_dfa() {
+    use serde_json::json;
+
+    let symbol = |name| json!({"type": "SYMBOL", "name": name});
+    let literal = |value| json!({"type": "STRING", "value": value});
+    let pattern = |value| json!({"type": "PATTERN", "value": value});
+    let priority = |value, content| json!({"type": "TOKEN", "content": {"type": "PREC", "value": value, "content": content}});
+    let cases = [
+        (
+            "precedence",
+            pattern("[a-z][a-z0-9]*"),
+            priority(2, literal("ab")),
+            priority(1, literal("abcd")),
+            priority(1, pattern("l[0-9]+")),
+            vec![
+                "ab", "abcd", "abcde", "if", "ifelse", "if!", "if!y", "l1", "l12345",
+            ],
+        ),
+        (
+            "widths",
+            pattern("[a-z\\x{e9}]+"),
+            priority(1, pattern("a[b\\x{e9}]")),
+            priority(1, literal("abx")),
+            priority(1, pattern("q(?:aa)+")),
+            vec!["ab", "a\u{e9}", "abx", "qa", "qaa", "qaaa", "qaaaa"],
+        ),
+        (
+            "nul",
+            pattern("[a-z\\x00]+"),
+            priority(1, pattern("a[a\\x00]*")),
+            priority(1, literal("bbb")),
+            priority(1, pattern("q(?:aa)+")),
+            vec!["a", "aaa", "a\0a", "aaaaa", "bbb", "qaa", "qaaa", "qaaaa"],
+        ),
+        (
+            "bounded",
+            pattern("[a-z]+"),
+            priority(1, pattern("k(?:aa){1,2}")),
+            priority(1, literal("abcdefghijklmnopqrst")),
+            priority(1, pattern("q(?:aa)+")),
+            vec![
+                "kaa",
+                "kaaa",
+                "kaaaa",
+                "abcdefghijklmnopqrst",
+                "qaa",
+                "qaaaa",
+            ],
+        ),
+    ];
+    for (suffix, word, short, long, variable, examples) in cases {
+        let grammar = json!({
+            "name": format!("keyword_buckets_{suffix}"),
+            "word": "identifier",
+            "rules": {
+                "source_file": {"type": "CHOICE", "members": [
+                    symbol("identifier"), symbol("short_keyword"), symbol("long_keyword"),
+                    symbol("variable_keyword"), literal("if"), literal("ifelse"), literal("if!x")
+                ]},
+                "identifier": word,
+                "short_keyword": short,
+                "long_keyword": long,
+                "variable_keyword": variable
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        assert!(code.contains(".keyword_lex_fn_with_length ="));
+        assert!(!code.contains("always_inline"));
+        let full_name = format!("{name}_full");
+        let full_code = code
+            .replace(&name, &full_name)
+            .replace("#define LANGUAGE_VERSION 16", "#define LANGUAGE_VERSION 15");
+        let mut bucket_parser = Parser::new();
+        bucket_parser
+            .set_language(&get_test_language(&name, &code, None))
+            .unwrap();
+        let mut full_parser = Parser::new();
+        full_parser
+            .set_language(&get_test_language(&full_name, &full_code, None))
+            .unwrap();
+        let mut examples = examples.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        if suffix == "precedence" {
+            for length in [65_535, 65_536, 65_537, 65_538, 65_539, 131_074] {
+                examples.push(format!("l{}", "1".repeat(length - 1)));
+            }
+        }
+        for example in examples {
+            let bucket = bucket_parser.parse(&example, None).unwrap();
+            let full = full_parser.parse(&example, None).unwrap();
+            assert_eq!(
+                bucket.root_node().to_sexp(),
+                full.root_node().to_sexp(),
+                "{suffix}, length {}",
+                example.len()
+            );
+            assert_eq!(bucket.root_node().end_byte(), full.root_node().end_byte());
+        }
+    }
+}
+
+#[test]
+fn test_keyword_buckets_nul_peek() {
+    let (name, code) = generate_parser(
+        r#"{
+        "name": "keyword_bucket_nul_peek",
+        "word": "identifier",
+        "extras": [{"type": "PATTERN", "value": "\\x00"}],
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "identifier"},
+                {"type": "STRING", "value": "if"},
+                {"type": "STRING", "value": "else"}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z\\x00]+"}
+        }
+    }"#,
+    )
+    .unwrap();
+    assert!(code.contains("ts_lex_keywords_with_length"));
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    for word in ["if", "else"] {
+        assert_eq!(
+            parser
+                .parse(word, None)
+                .unwrap()
+                .root_node()
+                .child(0)
+                .unwrap()
+                .kind(),
+            word
+        );
+    }
+}
+
+#[test]
 fn test_parsing_simple_string() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();

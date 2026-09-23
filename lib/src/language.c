@@ -89,10 +89,18 @@ bool ts_language_is_parseable(const TSLanguage *self) {
 const TSLanguage *ts_language_copy_without_callbacks(const TSLanguage *self) {
 #ifdef __wasm__
   if (self && ts_language_is_parseable(self)) {
-    TSUnparseableLanguage *result = ts_malloc(sizeof(TSUnparseableLanguage));
-    result->language = *self;
+    size_t size = self->abi_version >= LANGUAGE_VERSION_WITH_KEYWORD_CODEPOINTS
+      ? sizeof(TSLanguage)
+      : self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS
+        ? offsetof(TSLanguage, keyword_lex_fn_with_length)
+        : self->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES
+          ? offsetof(TSLanguage, name)
+          : offsetof(TSLanguage, primary_state_ids);
+    TSUnparseableLanguage *result = ts_calloc(1, sizeof(TSUnparseableLanguage));
+    memcpy(&result->language, self, size);
     result->language.lex_fn = NULL;
     result->language.keyword_lex_fn = NULL;
+    result->language.keyword_lex_fn_with_length = NULL;
     result->language.external_scanner.states = (const bool *)&result->language;
     result->language.external_scanner.create = NULL;
     result->language.external_scanner.destroy = NULL;

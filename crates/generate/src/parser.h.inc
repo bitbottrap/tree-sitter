@@ -149,6 +149,12 @@ struct TSLanguage {
   const TSMapSlice *supertype_map_slices;
   const TSSymbol *supertype_map_entries;
   TSLanguageMetadata metadata;
+  // ABI 16: word length is a Unicode code-point count; zero requests the full DFA.
+  // The legacy keyword_lex_fn remains available and does not take a word length.
+  bool (*keyword_lex_fn_with_length)(TSLexer *, TSStateId, uint32_t);
+  // Maximum keyword code-point count, or zero when no sound upper bound exists.
+  uint32_t max_keyword_length;
+  uint16_t keyword_bucket_count;
 };
 
 static inline bool set_contains(const TSCharacterRange *ranges, uint32_t len, int32_t lookahead) {

@@ -14,7 +14,7 @@ use crate::tables::{ActionListId, ActionListPool};
 
 use super::{
     LANGUAGE_VERSION,
-    build_tables::Tables,
+    build_tables::{KeywordBuckets, Tables},
     grammars::{LexicalGrammar, SyntaxGrammar, VariableType},
     nfa::CharacterSet,
     node_types::ChildType,
@@ -30,6 +30,7 @@ const SMALL_STATE_THRESHOLD: usize = 64;
 pub const ABI_VERSION_MIN: usize = 14;
 pub const ABI_VERSION_MAX: usize = LANGUAGE_VERSION;
 const ABI_VERSION_WITH_RESERVED_WORDS: usize = 15;
+const ABI_VERSION_WITH_KEYWORD_CODEPOINTS: usize = 16;
 
 pub type RenderResult<T> = Result<T, RenderError>;
 
@@ -107,6 +108,11 @@ struct Generator {
     abi_version: usize,
     metadata: Option<Metadata>,
     str_pool: StrPool,
+    keyword_buckets: KeywordBuckets,
+    /// Keyword length buckets: number of bucket DFAs,
+    /// captured when the tables are consumed for rendering, so
+    /// `add_parser_export` (which runs later) can advertise the count.
+    keyword_bucket_count: usize,
 }
 
 struct LargeCharacterSetInfo {
@@ -159,7 +165,35 @@ impl Generator {
         if self.syntax_grammar.word_token.is_some() {
             let mut keyword_lex_table = LexTable::default();
             swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
-            self.add_lex_function("ts_lex_keywords", keyword_lex_table);
+            if self.keyword_buckets.tables.is_empty() {
+                self.add_lex_function("ts_lex_keywords", keyword_lex_table);
+            } else {
+                // Keep the full DFA unchanged for legacy calls and separator
+                // overlap. The separate dispatcher takes a code-point count.
+                self.add_lex_function("ts_lex_keywords_full", keyword_lex_table);
+                let residual = std::mem::take(&mut self.keyword_buckets.residual);
+                // An empty residual (the common case) accepts nothing at any
+                // length -- the minimum over its empty keyword set is
+                // +infinity -- so every gap and the out-of-range tail answers
+                // false outright and the reduced DFA is not emitted at all.
+                let residual_empty = residual.states.is_empty();
+                if !residual_empty {
+                    self.add_lex_function("ts_lex_keywords_reduced", residual);
+                }
+                let buckets = std::mem::take(&mut self.keyword_buckets.tables);
+                self.keyword_bucket_count = buckets.len();
+                let mut bucket_names = Vec::with_capacity(buckets.len());
+                for (len, table) in buckets {
+                    let name = format!("ts_lex_kw_b{len}");
+                    self.add_lex_function_attr(&name, table, true, true);
+                    bucket_names.push((len, name));
+                }
+                self.add_keyword_dispatcher(
+                    &bucket_names,
+                    self.keyword_buckets.residual_min,
+                    residual_empty,
+                );
+            }
         }
 
         // Once the lex functions are generated, and we've determined which large
@@ -857,40 +891,220 @@ impl Generator {
     }
 
     fn add_lex_function(&mut self, name: &str, lex_table: LexTable) {
-        add_line!(
-            self,
-            "static bool {name}(TSLexer *lexer, TSStateId state) {{",
-        );
-        indent!(self);
+        self.add_lex_function_attr(name, lex_table, false, false);
+    }
 
-        add_line!(self, "START_LEXER();");
-        add_line!(self, "eof = lexer->eof(lexer);");
-        add_line!(self, "switch (state) {{");
-
-        indent!(self);
-        for (i, state) in lex_table.states.into_iter().enumerate() {
-            add_line!(self, "case {i}:");
-            indent!(self);
-            self.add_lex_state(i, state);
-            dedent!(self);
+    /// Bucket helpers use portable inlining and enter their root directly.
+    /// Subsequent transitions use the normal state switch. Only states that
+    /// can consume NUL need an EOF check; code-point zero alone is ambiguous.
+    fn add_lex_function_attr(
+        &mut self,
+        name: &str,
+        lex_table: LexTable,
+        inline: bool,
+        direct_entry: bool,
+    ) {
+        if inline {
+            add_line!(
+                self,
+                "static inline bool {name}(TSLexer *lexer, TSStateId state) {{",
+            );
+        } else {
+            add_line!(
+                self,
+                "static bool {name}(TSLexer *lexer, TSStateId state) {{",
+            );
         }
-
-        add_line!(self, "default:");
         indent!(self);
-        add_line!(self, "return false;");
-        dedent!(self);
 
-        dedent!(self);
-        add_line!(self, "}}");
+        let mut states = lex_table.states;
+        let direct_entry = direct_entry && !states.is_empty();
+        if direct_entry {
+            debug_assert!(states.iter().all(|state| state.eof_action.is_none()));
+            // Does any transition (including a self-loop on state 0) re-enter
+            // the root from the loop? If so the switch needs a stub for it.
+            let root_reentered = states.iter().any(|s| {
+                s.advance_actions.iter().any(|(_, a)| a.state == 0)
+                    || s.eof_action.as_ref().is_some_and(|a| a.state == 0)
+            });
+            let root_state = states.remove(0);
+            // Hand-expanded START_LEXER() with the entry goto retargeted to
+            // the root body (see doc comment): declarations and the bypass
+            // must precede the loop head, and the next_state path must match
+            // the macro in parser.h exactly.
+            add_line!(self, "bool result = false;");
+            add_line!(self, "bool skip = false;");
+            add_line!(self, "UNUSED");
+            add_line!(self, "bool eof = false;");
+            add_line!(self, "int32_t lookahead;");
+            add_line!(self, "goto {name}_root;");
+            add_line!(self, "next_state:");
+            add_line!(self, "lexer->advance(lexer, skip);");
+            add_line!(self, "skip = false;");
+            add_line!(self, "lookahead = lexer->lookahead;");
+            add_line!(self, "switch (state) {{");
+            indent!(self);
+            if root_reentered {
+                // Re-entry already has the next code point loaded.
+                add_line!(self, "case 0:");
+                indent!(self);
+                add_line!(self, "goto {name}_re;");
+                dedent!(self);
+            }
+            // `states` lost its root, so the remaining original state `i`
+            // sits at index `i - 1`: re-offset the labels.
+            for (i, state) in states.into_iter().enumerate() {
+                add_line!(self, "case {}:", i + 1);
+                indent!(self);
+                self.add_lex_state(i + 1, state, true);
+                dedent!(self);
+            }
+            add_line!(self, "default:");
+            indent!(self);
+            add_line!(self, "return false;");
+            dedent!(self);
+            dedent!(self);
+            add_line!(self, "}}");
+            add_line!(self, "{name}_root:");
+            add_line!(self, "lookahead = lexer->lookahead;");
+            if root_reentered {
+                add_line!(self, "{name}_re:");
+            }
+            self.add_lex_state(0, root_state, true);
+        } else {
+            add_line!(self, "START_LEXER();");
+            add_line!(self, "eof = lexer->eof(lexer);");
+            add_line!(self, "switch (state) {{");
+            indent!(self);
+            for (i, state) in states.into_iter().enumerate() {
+                add_line!(self, "case {i}:");
+                indent!(self);
+                self.add_lex_state(i, state, false);
+                dedent!(self);
+            }
+
+            add_line!(self, "default:");
+            indent!(self);
+            add_line!(self, "return false;");
+            dedent!(self);
+
+            dedent!(self);
+            add_line!(self, "}}");
+        }
 
         dedent!(self);
         add_line!(self, "}}");
         add_line!(self, "");
     }
 
-    fn add_lex_state(&mut self, _state_ix: usize, state: LexState) {
+    /// Retain the two-argument full-DFA entry and add a code-point-length
+    /// dispatcher. Zero means unknown length; gaps and the unbounded tail
+    /// consult the residual unless its minimum proves a match impossible.
+    fn add_keyword_dispatcher(
+        &mut self,
+        buckets: &[(u16, String)],
+        residual_min: u32,
+        residual_empty: bool,
+    ) {
+        // Gap lengths that must answer false outright (below the residual's
+        // minimum match length, or any gap when the residual is empty).
+        // Gaps at or above the minimum fall through to `default` (the reduced
+        // DFA); bucket lengths have their own cases.
+        let gap_is_false = |len: u16| -> bool { residual_empty || u32::from(len) < residual_min };
+        let mut false_gaps: Vec<u16> = Vec::new();
+        let mut next_len = 1u16;
+        for (len, _) in buckets {
+            while next_len < *len {
+                if gap_is_false(next_len) {
+                    false_gaps.push(next_len);
+                }
+                next_len += 1;
+            }
+            next_len = len + 1;
+        }
+        add_line!(
+            self,
+            "static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {{"
+        );
+        add_line!(self, "  return ts_lex_keywords_full(lexer, state);");
+        add_line!(self, "}}");
+        add_line!(self, "");
+        add_line!(
+            self,
+            "static inline bool ts_lex_keywords_with_length(TSLexer *lexer, TSStateId state, uint32_t word_length) {{"
+        );
+        indent!(self);
+        add_line!(self, "(void)state;");
+        // When the root separator can fire for words beginning with a peek
+        // character (separator-start ∩ word-start is non-empty), such a word
+        // may consume separator bytes before its literal, so its length no
+        // longer equals a keyword literal length and the length-indexed bucket
+        // would be wrong. Peek the first character (before any advance) and
+        // send those words straight to the full DFA. For disjoint grammars the
+        // peek set is empty and this guard is omitted entirely.
+        let peek = std::mem::take(&mut self.keyword_buckets.peek);
+        if peek.range_count() > 0 {
+            add_line!(self, "int32_t lookahead = lexer->lookahead;");
+            if peek.contains('\0') {
+                add_line!(self, "bool eof = lookahead == 0 && lexer->eof(lexer);");
+            }
+            add!(self, "if (");
+            let line_break = format!("\n{}", "  ".repeat(self.indent_level + 1));
+            self.add_character_range_conditions(&peek, true, &line_break);
+            add_line!(self, ") {{");
+            indent!(self);
+            add_line!(self, "return ts_lex_keywords_full(lexer, 0);");
+            dedent!(self);
+            add_line!(self, "}}");
+        }
+        add_line!(self, "switch (word_length) {{");
+        indent!(self);
+        add_line!(self, "case 0:");
+        indent!(self);
+        add_line!(self, "return ts_lex_keywords_full(lexer, 0);");
+        dedent!(self);
+        for (len, name) in buckets {
+            add_line!(self, "case {len}:");
+            indent!(self);
+            add_line!(self, "return {name}(lexer, 0);");
+            dedent!(self);
+        }
+        for len in false_gaps {
+            add_line!(self, "case {len}:");
+            indent!(self);
+            add_line!(self, "return false;");
+            dedent!(self);
+        }
+        add_line!(self, "default:");
+        indent!(self);
+        if residual_empty {
+            add_line!(self, "return false;");
+        } else {
+            add_line!(self, "return ts_lex_keywords_reduced(lexer, 0);");
+        }
+        dedent!(self);
+        dedent!(self);
+        add_line!(self, "}}");
+        dedent!(self);
+        add_line!(self, "}}");
+        add_line!(self, "");
+    }
+
+    fn add_lex_state(&mut self, _state_ix: usize, state: LexState, bucket: bool) {
         if let Some(accept_action) = state.accept_action {
             add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
+        }
+
+        if bucket
+            && state
+                .advance_actions
+                .iter()
+                .any(|(chars, _)| chars.contains('\0'))
+        {
+            add_line!(
+                self,
+                "if (lookahead == 0 && lexer->eof(lexer)) return result;"
+            );
         }
 
         if let Some(eof_action) = state.eof_action {
@@ -1646,6 +1860,28 @@ impl Generator {
                 ".keyword_capture_token = {},",
                 self.symbol_ids[&keyword_capture_token]
             );
+            if self.abi_version >= ABI_VERSION_WITH_KEYWORD_CODEPOINTS
+                && self.keyword_buckets.max_length > 0
+            {
+                add_line!(
+                    self,
+                    ".max_keyword_length = {},",
+                    self.keyword_buckets.max_length
+                );
+            }
+            if self.abi_version >= ABI_VERSION_WITH_KEYWORD_CODEPOINTS
+                && self.keyword_bucket_count > 0
+            {
+                add_line!(
+                    self,
+                    ".keyword_bucket_count = {},",
+                    self.keyword_bucket_count
+                );
+                add_line!(
+                    self,
+                    ".keyword_lex_fn_with_length = ts_lex_keywords_with_length,"
+                );
+            }
         }
 
         if !self.syntax_grammar.external_tokens.is_empty() {
@@ -2006,6 +2242,7 @@ pub fn render_c_code(
         }),
         supertype_symbol_map,
         str_pool,
+        keyword_buckets: tables.keyword_buckets,
         ..Default::default()
     }
     .generate()

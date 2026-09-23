@@ -8,7 +8,7 @@ mod token_conflicts;
 
 use std::collections::BTreeSet;
 
-pub use build_lex_table::LARGE_CHARACTER_RANGE_COUNT;
+pub use build_lex_table::{KeywordBuckets, LARGE_CHARACTER_RANGE_COUNT};
 use build_parse_table::BuildTableResult;
 pub use build_parse_table::ParseTableBuilderError;
 use log::{debug, info};
@@ -38,6 +38,7 @@ pub struct Tables {
     pub main_lex_table: LexTable,
     pub keyword_lex_table: LexTable,
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
+    pub keyword_buckets: KeywordBuckets,
 }
 
 #[expect(
@@ -132,6 +133,7 @@ pub fn build_tables(
         main_lex_table: lex_tables.main_lex_table,
         keyword_lex_table: lex_tables.keyword_lex_table,
         large_character_sets: lex_tables.large_character_sets,
+        keyword_buckets: lex_tables.keyword_buckets,
     })
 }
 

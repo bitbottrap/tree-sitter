@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fmt::Write, fs};
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor, WasmError, WasmErrorKind, WasmStore};
@@ -7,6 +7,123 @@ use crate::tests::helpers::{
     allocations,
     fixtures::{ENGINE, WASM_DIR, get_test_fixture_language_wasm},
 };
+
+#[test]
+fn test_keyword_buckets_wasm() {
+    use crate::tests::{generate_parser, helpers::fixtures::get_test_language_wasm};
+
+    let (name, code) = generate_parser(
+        r#"{
+        "name": "keyword_bucket_wasm",
+        "word": "identifier",
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "identifier"},
+                {"type": "STRING", "value": "if"},
+                {"type": "STRING", "value": "else"},
+                {"type": "STRING", "value": "\u00e9"},
+                {"type": "SYMBOL", "name": "variable_keyword"}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z\\x{e9}][a-z0-9\\x{e9}]*"},
+            "variable_keyword": {"type": "TOKEN", "content": {
+                "type": "PREC", "value": 1,
+                "content": {"type": "PATTERN", "value": "l[0-9]+"}
+            }}
+        }
+    }"#,
+    )
+    .unwrap();
+    for version in [15, 16] {
+        let name_with_version = format!("{name}_{version}");
+        let mut code = code.replace(&name, &name_with_version).replace(
+            "#define LANGUAGE_VERSION 16",
+            &format!("#define LANGUAGE_VERSION {version}"),
+        );
+        if version == 15 {
+            let function = format!("tree_sitter_{name_with_version}");
+            code = code.replace(&function, &format!("original_{function}"));
+            write!(
+                code,
+                r"
+#include <stddef.h>
+#include <string.h>
+TS_PUBLIC const TSLanguage *{function}(void) {{
+    size_t size = offsetof(TSLanguage, keyword_lex_fn_with_length);
+    unsigned char *end = (unsigned char *)(__builtin_wasm_memory_size(0) * 65536);
+    memcpy(end - size, original_{function}(), size);
+    return (const TSLanguage *)(end - size);
+}}
+"
+            )
+            .unwrap();
+        }
+        let language = get_test_language_wasm(&name_with_version, &code);
+        assert_eq!(language.abi_version(), version);
+        for _ in 0..2 {
+            let mut parser = Parser::new();
+            parser
+                .set_wasm_store(WasmStore::new(&ENGINE).unwrap())
+                .unwrap();
+            parser.set_language(&language).unwrap();
+            for word in ["if", "else", "\u{e9}"] {
+                let utf8 = parser.parse(word, None).unwrap();
+                assert_eq!(utf8.root_node().child(0).unwrap().kind(), word);
+                let input = word.encode_utf16().map(u16::to_le).collect::<Vec<_>>();
+                let utf16 = parser.parse_utf16_le(&input, None).unwrap();
+                assert_eq!(utf16.root_node().child(0).unwrap().kind(), word);
+            }
+            let input = format!("l{}", "1".repeat(65537));
+            let tree = parser.parse(&input, None).unwrap();
+            assert_eq!(
+                tree.root_node().child(0).unwrap().kind(),
+                "variable_keyword"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_keyword_buckets_legacy_wasm_memory_boundary() {
+    use crate::tests::helpers::fixtures::get_test_language_wasm;
+
+    for version in [13, 14, 15, 16] {
+        let name = format!("keyword_abi_boundary_{version}");
+        let code = format!(
+            r#"
+            #include "tree_sitter/parser.h"
+            #include <stddef.h>
+            #include <string.h>
+            static bool lex(TSLexer *lexer, TSStateId state) {{
+                (void)lexer;
+                (void)state;
+                return false;
+            }}
+            __attribute__((visibility("default")))
+            const TSLanguage *tree_sitter_{name}(void) {{
+                static const TSLanguage language = {{
+                    .abi_version = {version},
+                    .lex_fn = lex,
+                    .name = "{name}",
+                }};
+                size_t size = {version} >= 16 ? sizeof(TSLanguage)
+                    : {version} >= 15 ? offsetof(TSLanguage, keyword_lex_fn_with_length)
+                    : {version} >= 14 ? offsetof(TSLanguage, name)
+                    : offsetof(TSLanguage, primary_state_ids);
+                void *address = (void *)(__builtin_wasm_memory_size(0) * 65536 - size);
+                memcpy(address, &language, size);
+                return address;
+            }}
+        "#
+        );
+        let language = get_test_language_wasm(&name, &code);
+        assert_eq!(language.abi_version(), version);
+        let mut parser = Parser::new();
+        parser
+            .set_wasm_store(WasmStore::new(&ENGINE).unwrap())
+            .unwrap();
+        parser.set_language(&language).unwrap();
+    }
+}
 
 #[test]
 fn test_wasm_stdlib_symbols() {

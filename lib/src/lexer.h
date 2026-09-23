@@ -20,6 +20,8 @@ typedef struct {
   Length current_position;
   Length token_start_position;
   Length token_end_position;
+  uint32_t token_codepoint_count;
+  uint32_t token_end_codepoint_count;
 
   TSRange *included_ranges;
   const char *chunk;

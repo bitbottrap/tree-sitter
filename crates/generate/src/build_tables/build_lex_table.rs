@@ -3,7 +3,7 @@ use std::{
     mem,
 };
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use log::debug;
 
@@ -17,11 +17,271 @@ use crate::{
 };
 
 pub const LARGE_CHARACTER_RANGE_COUNT: usize = 8;
+const MAX_KEYWORD_BUCKET_LENGTH: u32 = 16;
+const TAIL_DEPTH: u32 = MAX_KEYWORD_BUCKET_LENGTH + 1;
+const TAIL_BIT: u32 = 1 << TAIL_DEPTH;
+const DEPTH_MASK: u32 = (TAIL_BIT << 1) - 1;
 
 pub struct LexTables {
     pub main_lex_table: LexTable,
     pub keyword_lex_table: LexTable,
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
+    pub keyword_buckets: KeywordBuckets,
+}
+
+#[derive(Default)]
+pub struct KeywordBuckets {
+    /// Maximum accepted code-point length; zero disables the runtime bound.
+    pub max_length: u32,
+    /// Sorted exact code-point lengths with their specialized DFAs.
+    pub tables: Vec<(u16, LexTable)>,
+    /// The resolved DFA restricted to lengths not handled by a bucket.
+    pub residual: LexTable,
+    /// Word-start characters that require the full separator-aware DFA.
+    pub peek: CharacterSet,
+    /// Minimum accepted code-point length in the residual, or zero if empty.
+    pub residual_min: u32,
+}
+
+fn word_body_start(lexical_grammar: &LexicalGrammar, word_token: Symbol) -> CharacterSet {
+    let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
+    let mut result = CharacterSet::empty();
+    let start = lexical_grammar.variables[word_token.index as usize].start_state;
+    let mut stack = vec![start];
+    let mut seen = FxHashSet::default();
+    while let Some(state) = stack.pop() {
+        if !seen.insert(state) {
+            continue;
+        }
+        cursor.reset(vec![state]);
+        for transition in cursor.transitions() {
+            if transition.is_separator {
+                stack.extend(transition.states);
+            } else {
+                result = result.add(&transition.characters);
+            }
+        }
+    }
+    result
+}
+
+/// Depths 0..=16 are exact. Depth 17 is absorbing and represents every longer
+/// path. This finite product graph preserves tail reachability through cycles
+/// without enumerating their unbounded lengths.
+const fn advance_depths(depths: u32) -> u32 {
+    ((depths << 1) & DEPTH_MASK) | (depths & TAIL_BIT)
+}
+
+/// Derive a specialized DFA without rebuilding token subsets: lexical
+/// precedence has already removed losing transitions from `full`.
+/// Projecting live depth pairs back onto states preserves compact loops;
+/// the parser still checks that the accepted source end equals the word end.
+fn prune_keyword_dfa(
+    full: &LexTable,
+    reachable: &[u32],
+    predecessors: &[Vec<usize>],
+    accept_depths: u32,
+) -> LexTable {
+    let mut live = vec![0; full.states.len()];
+    let mut queue = VecDeque::new();
+    for (state_id, state) in full.states.iter().enumerate() {
+        if state.accept_action.is_some() {
+            live[state_id] = reachable[state_id] & accept_depths;
+            if live[state_id] != 0 {
+                queue.push_back(state_id);
+            }
+        }
+    }
+    while let Some(state_id) = queue.pop_front() {
+        let preceding_depths = (live[state_id] >> 1) | (live[state_id] & TAIL_BIT);
+        for &predecessor in &predecessors[state_id] {
+            let added = preceding_depths & reachable[predecessor] & !live[predecessor];
+            if added != 0 {
+                live[predecessor] |= added;
+                queue.push_back(predecessor);
+            }
+        }
+    }
+    if live[0] == 0 {
+        return LexTable::default();
+    }
+    let mut result = LexTable::default();
+    let mut new_ids = vec![u32::MAX; full.states.len()];
+    for (state_id, &depths) in live.iter().enumerate() {
+        if depths != 0 {
+            new_ids[state_id] = result.states.len() as u32;
+            result.states.push(LexState::default());
+        }
+    }
+    for (state_id, state) in full.states.iter().enumerate() {
+        if live[state_id] == 0 {
+            continue;
+        }
+        let output = &mut result.states[new_ids[state_id] as usize];
+        if live[state_id] & accept_depths != 0 {
+            output.accept_action = state.accept_action;
+        }
+        for (characters, action) in &state.advance_actions {
+            let destination = action.state as usize;
+            if action.in_main_token && advance_depths(live[state_id]) & live[destination] != 0 {
+                output.advance_actions.push((
+                    characters.clone(),
+                    AdvanceAction {
+                        state: new_ids[destination],
+                        in_main_token: true,
+                    },
+                ));
+            }
+        }
+    }
+    result
+}
+
+fn build_keyword_buckets(full: &LexTable, word_start: &CharacterSet) -> KeywordBuckets {
+    let state_count = full.states.len();
+    if state_count == 0 || full.states.iter().any(|state| state.eof_action.is_some()) {
+        return KeywordBuckets::default();
+    }
+    let mut reachable = vec![0u32; state_count];
+    let mut tail_minimum = vec![0u32; state_count];
+    let mut queue = VecDeque::from([(0usize, 0u32)]);
+    reachable[0] = 1;
+    while let Some((state_id, depth)) = queue.pop_front() {
+        for (_, action) in &full.states[state_id].advance_actions {
+            if !action.in_main_token {
+                continue;
+            }
+            let destination = action.state as usize;
+            let next_depth = depth + 1;
+            let bit = 1 << next_depth.min(TAIL_DEPTH);
+            if reachable[destination] & bit == 0 {
+                reachable[destination] |= bit;
+                if bit == TAIL_BIT {
+                    tail_minimum[destination] = next_depth;
+                }
+                queue.push_back((destination, next_depth));
+            }
+        }
+    }
+    if full.states.iter().enumerate().any(|(state_id, state)| {
+        reachable[state_id] & !1 != 0
+            && state
+                .advance_actions
+                .iter()
+                .any(|(_, action)| !action.in_main_token)
+    }) {
+        return KeywordBuckets::default();
+    }
+    let mut separator_start = CharacterSet::empty();
+    for (characters, action) in &full.states[0].advance_actions {
+        if !action.in_main_token {
+            separator_start = separator_start.add(characters);
+        }
+    }
+    let peek = separator_start.remove_intersection(&mut word_start.clone());
+    let mut predecessors = vec![Vec::new(); state_count];
+    for (state_id, state) in full.states.iter().enumerate() {
+        for (_, action) in &state.advance_actions {
+            if action.in_main_token {
+                predecessors[action.state as usize].push(state_id);
+            }
+        }
+    }
+    let mut live = vec![false; state_count];
+    let mut pending = Vec::new();
+    for (state_id, state) in full.states.iter().enumerate() {
+        if reachable[state_id] != 0 && state.accept_action.is_some() {
+            live[state_id] = true;
+            pending.push(state_id);
+        }
+    }
+    while let Some(state_id) = pending.pop() {
+        for &predecessor in &predecessors[state_id] {
+            if reachable[predecessor] != 0 && !live[predecessor] {
+                live[predecessor] = true;
+                pending.push(predecessor);
+            }
+        }
+    }
+    let mut indegree = vec![0; state_count];
+    for (state_id, state) in full.states.iter().enumerate() {
+        if live[state_id] {
+            for (_, action) in &state.advance_actions {
+                if action.in_main_token && live[action.state as usize] {
+                    indegree[action.state as usize] += 1;
+                }
+            }
+        }
+    }
+    let mut queue: VecDeque<_> = (0..state_count)
+        .filter(|&state_id| live[state_id] && indegree[state_id] == 0)
+        .collect();
+    let mut bounded = vec![false; state_count];
+    let mut longest = vec![0u32; state_count];
+    while let Some(state_id) = queue.pop_front() {
+        bounded[state_id] = true;
+        for (_, action) in &full.states[state_id].advance_actions {
+            let destination = action.state as usize;
+            if action.in_main_token && live[destination] {
+                longest[destination] = longest[destination].max(longest[state_id] + 1);
+                indegree[destination] -= 1;
+                if indegree[destination] == 0 {
+                    queue.push_back(destination);
+                }
+            }
+        }
+    }
+    let mut bucket_depths = 0;
+    let mut max_length = 0;
+    for (state_id, state) in full.states.iter().enumerate() {
+        if bounded[state_id] && state.accept_action.is_some() {
+            bucket_depths |= reachable[state_id] & (TAIL_BIT - 2);
+            max_length = max_length.max(longest[state_id]);
+        }
+    }
+    if !peek.is_empty()
+        || live
+            .iter()
+            .zip(&bounded)
+            .any(|(&live, &bounded)| live && !bounded)
+    {
+        max_length = 0;
+    }
+    let tables = (1..=MAX_KEYWORD_BUCKET_LENGTH)
+        .filter(|depth| bucket_depths & (1 << depth) != 0)
+        .map(|depth| {
+            (
+                depth as u16,
+                prune_keyword_dfa(full, &reachable, &predecessors, 1 << depth),
+            )
+        })
+        .collect();
+    let residual_depths = DEPTH_MASK & !(bucket_depths | 1);
+    let residual = prune_keyword_dfa(full, &reachable, &predecessors, residual_depths);
+    let residual_min = full
+        .states
+        .iter()
+        .enumerate()
+        .filter(|(_, state)| state.accept_action.is_some())
+        .filter_map(|(state_id, _)| {
+            let depths = reachable[state_id] & residual_depths;
+            if depths == 0 {
+                None
+            } else if depths & !TAIL_BIT != 0 {
+                Some(depths.trailing_zeros())
+            } else {
+                Some(tail_minimum[state_id])
+            }
+        })
+        .min()
+        .unwrap_or(0);
+    KeywordBuckets {
+        max_length,
+        tables,
+        residual,
+        peek,
+        residual_min,
+    }
 }
 
 pub fn build_lex_table(
@@ -39,7 +299,11 @@ pub fn build_lex_table(
     } else {
         LexTable::default()
     };
-
+    let keyword_buckets = syntax_grammar
+        .word_token
+        .map_or_else(KeywordBuckets::default, |word| {
+            build_keyword_buckets(&keyword_lex_table, &word_body_start(lexical_grammar, word))
+        });
     let mut parse_state_ids_by_token_set = Vec::<(TokenSet, Vec<ParseStateId>)>::new();
     for (i, state) in parse_table.states.iter().enumerate() {
         let tokens = state
@@ -127,6 +391,7 @@ pub fn build_lex_table(
         main_lex_table,
         keyword_lex_table,
         large_character_sets,
+        keyword_buckets,
     }
 }
 
@@ -181,6 +446,10 @@ impl<'a> LexTableBuilder<'a> {
                 "entry point state: {state_id}, tokens: {:?}",
                 tokens
                     .iter()
+                    // EOF and external tokens have no lexical-grammar
+                    // variable, so only terminals can be named (yaml's entry
+                    // state, for example, holds only external tokens).
+                    .filter(|t| t.is_terminal())
                     .map(|t| &self.lexical_grammar.variables[t.index as usize].name)
                     .collect::<Vec<_>>()
             );

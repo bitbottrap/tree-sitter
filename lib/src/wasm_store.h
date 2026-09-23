@@ -14,6 +14,7 @@ bool ts_wasm_store_has_error(const TSWasmStore *self);
 
 bool ts_wasm_store_call_lex_main(TSWasmStore *self, TSStateId state);
 bool ts_wasm_store_call_lex_keyword(TSWasmStore *self, TSStateId state);
+bool ts_wasm_store_call_lex_keyword_with_length(TSWasmStore *self, TSStateId state, uint32_t word_length);
 
 uint32_t ts_wasm_store_call_scanner_create(TSWasmStore *self);
 void ts_wasm_store_call_scanner_destroy(TSWasmStore *self, uint32_t scanner_address);

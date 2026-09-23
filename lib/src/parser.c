@@ -346,11 +346,18 @@ static bool ts_parser__call_main_lex_fn(TSParser *self, TSLexerMode lex_mode) {
   }
 }
 
-static bool ts_parser__call_keyword_lex_fn(TSParser *self) {
+static bool ts_parser__call_keyword_lex_fn(TSParser *self, uint32_t word_length) {
+  bool has_buckets =
+    self->language->abi_version >= LANGUAGE_VERSION_WITH_KEYWORD_CODEPOINTS &&
+    self->language->keyword_bucket_count > 0;
   if (ts_language_is_wasm(self->language)) {
-    return ts_wasm_store_call_lex_keyword(self->wasm_store, 0);
+    return has_buckets
+      ? ts_wasm_store_call_lex_keyword_with_length(self->wasm_store, 0, word_length)
+      : ts_wasm_store_call_lex_keyword(self->wasm_store, 0);
   } else {
-    return self->language->keyword_lex_fn(&self->lexer.data, 0);
+    return has_buckets
+      ? self->language->keyword_lex_fn_with_length(&self->lexer.data, 0, word_length)
+      : self->language->keyword_lex_fn(&self->lexer.data, 0);
   }
 }
 
@@ -651,21 +658,28 @@ static Subtree ts_parser__lex(
     if (found_external_token) {
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
-      uint32_t end_byte = self->lexer.token_end_position.bytes;
-      ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
-      ts_lexer_start(&self->lexer);
+      uint32_t word_length = self->lexer.token_end_codepoint_count;
+      bool within_keyword_bound =
+        self->language->abi_version < LANGUAGE_VERSION_WITH_KEYWORD_CODEPOINTS ||
+        self->language->max_keyword_length == 0 ||
+        word_length <= self->language->max_keyword_length;
+      if (within_keyword_bound) {
+        uint32_t end_byte = self->lexer.token_end_position.bytes;
+        ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+        ts_lexer_start(&self->lexer);
 
-      is_keyword = ts_parser__call_keyword_lex_fn(self);
+        is_keyword = ts_parser__call_keyword_lex_fn(self, word_length);
 
-      if (
-        is_keyword &&
-        self->lexer.token_end_position.bytes == end_byte &&
-        (
-          ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
-        )
-      ) {
-        symbol = self->lexer.data.result_symbol;
+        if (
+          is_keyword &&
+          self->lexer.token_end_position.bytes == end_byte &&
+          (
+            ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
+            ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
+          )
+        ) {
+          symbol = self->lexer.data.result_symbol;
+        }
       }
     }
 
