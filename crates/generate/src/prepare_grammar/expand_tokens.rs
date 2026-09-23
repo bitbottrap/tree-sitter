@@ -122,6 +122,7 @@ pub fn expand_tokens(
             kind: variable.kind,
             implicit_precedence: get_implicit_precedence(pool, variable.root),
             start_state: builder.nfa.last_state_id(),
+            is_immediate: is_immediate_token,
         });
     }
 

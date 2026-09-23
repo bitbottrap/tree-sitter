@@ -70,7 +70,8 @@ pub fn build_tables(
     let token_conflict_map = TokenConflictMap::new(lexical_grammar, following_tokens);
     let coincident_token_index =
         CoincidentTokenIndex::new(&parse_table, lexical_grammar, syntax_grammar.word_token);
-    let keywords = identify_keywords(
+    let (keywords, unsafe_keyword_pairs) = identify_keywords(
+        syntax_grammar,
         lexical_grammar,
         syntax_grammar.word_token,
         &token_conflict_map,
@@ -105,6 +106,8 @@ pub fn build_tables(
         &keywords,
         &coincident_token_index,
         &token_conflict_map,
+        &unsafe_keyword_pairs,
+        str_pool,
     );
     populate_external_lex_states(&mut parse_table, syntax_grammar);
     mark_fragile_tokens(&mut parse_table, &token_conflict_map);
@@ -340,18 +343,36 @@ fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &S
 }
 
 fn identify_keywords(
+    syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
     word_token: Option<Symbol>,
     token_conflict_map: &TokenConflictMap,
     coincident_token_index: &CoincidentTokenIndex,
     str_pool: &StrPool,
-) -> TokenSet {
+) -> (TokenSet, Vec<(Symbol, Symbol)>) {
     if word_token.is_none() {
-        return TokenSet::new();
+        return (TokenSet::new(), Vec::new());
     }
 
     let word_token = word_token.unwrap();
+    // Keyword exclusion: a keyword candidate that the third filter below would
+    // exclude is not dropped globally; it is INCLUDED in the global keyword
+    // table and each (keyword, other) conflict pair is recorded so
+    // build_lex_table can retain the raw keyword in exactly the parse states
+    // with the unsafe structure (keyword + conflicting token valid, `word`
+    // absent). The global exclusion becomes a per-state decision, which fixes
+    // keyword-split misparses (bash `do`/`in`, vim `is#`, v casts) without
+    // giving up keyword extraction elsewhere.
+    let mut unsafe_pairs: Vec<(Symbol, Symbol)> = Vec::new();
     let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
+    // Bookkeeping for the phantom-conflict guard in the third filter:
+    // candidates the immediate-token guard demotes (they passed the
+    // alphabetical + same/different-string tests and failed only
+    // `is_immediate`). Filter 3 skips keyword candidates as conflict
+    // partners; applying the same skip to guard-demoted tokens stops the
+    // guard from manufacturing filter-3 conflicts that would not otherwise
+    // exist.
+    let mut guard_demoted = TokenSet::new();
 
     // First find all of the candidate keyword tokens: tokens that start with
     // letters or underscore and can match the same string as a word token.
@@ -369,6 +390,31 @@ fn identify_keywords(
                     "Keywords - add candidate {}",
                     str_pool.resolve(lexical_grammar.variables[i].name)
                 );
+                // A keyword must be lexable from a fresh, context-free lexing
+                // start: it has to be recognizable as a standalone word
+                // wherever it appears. A `token.immediate(...)` token is the
+                // opposite - it is only ever produced as a *continuation* of a
+                // preceding token (e.g. a numeric-literal suffix like the `l`
+                // in `0l`). The keyword lex DFA is a separate, context-free
+                // matcher with no whitespace/lookbehind, so runtime keyword
+                // recovery would match the bare suffix anywhere and steal
+                // single-letter identifiers (fsharp `let l = max 0 l`).
+                // Without this guard, float-suffix tokens like fsharp's
+                // `lf`/`LF` would be extracted as keywords. Tokens the author
+                // explicitly reserved as reserved words stay in the keyword DFA
+                // regardless.
+                let explicitly_reserved = syntax_grammar
+                    .reserved_word_sets
+                    .iter()
+                    .any(|tokens| tokens.contains(Symbol::terminal(i)));
+                if variable.is_immediate && !explicitly_reserved {
+                    debug!(
+                        "Keywords - exclude {} because it is an immediate token",
+                        str_pool.resolve(lexical_grammar.variables[i].name)
+                    );
+                    guard_demoted.insert(Symbol::terminal(i));
+                    return None;
+                }
                 Some(Symbol::terminal(i))
             } else {
                 None
@@ -401,44 +447,61 @@ fn identify_keywords(
     // Exclude keyword candidates for which substituting the keyword capture
     // token would introduce new lexical conflicts with other tokens.
 
-    keywords
-        .iter()
-        .filter(|token| {
-            for other_index in 0..lexical_grammar.variables.len() {
-                if keyword_candidates.contains(Symbol::terminal(other_index)) {
-                    continue;
-                }
-
-                // If the word token was already valid in every state containing
-                // this keyword candidate, then substituting the word token won't
-                // introduce any new lexical conflicts.
-                if coincident_token_index
-                    .all_coincident_states_have_word(*token, Symbol::terminal(other_index))
-                {
-                    continue;
-                }
-
-                if !token_conflict_map.has_same_conflict_status(
-                    token.index as usize,
-                    word_token.index as usize,
-                    other_index,
-                ) {
-                    debug!(
-                        "Keywords - exclude {} because of conflict with {}",
-                        str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
-                        str_pool.resolve(lexical_grammar.variables[other_index].name)
-                    );
-                    return false;
-                }
+    for token in keywords.iter() {
+        for other_index in 0..lexical_grammar.variables.len() {
+            if keyword_candidates.contains(Symbol::terminal(other_index)) {
+                continue;
+            }
+            // Phantom-conflict guard: the candidate skip above covers
+            // every keyword token, and the tokens the immediate guard
+            // demotes would have been candidates without it. Treat those
+            // as skipped too, so the guard cannot manufacture a filter-3
+            // conflict that would not otherwise exist. The keyword still
+            // reaches the global keyword DFA unchanged; only the phantom
+            // unsafe pair (and its downstream main-DFA retention) is
+            // suppressed.
+            if guard_demoted.contains(Symbol::terminal(other_index)) {
+                debug!(
+                    "Keywords - skip phantom conflict {} ~ {} (partner was demoted by the immediate guard)",
+                    str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
+                    str_pool.resolve(lexical_grammar.variables[other_index].name),
+                );
+                continue;
             }
 
-            debug!(
-                "Keywords - include {}",
-                str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
-            );
-            true
-        })
-        .collect()
+            // If the word token was already valid in every state containing
+            // this keyword candidate, then substituting the word token won't
+            // introduce any new lexical conflicts.
+            if coincident_token_index
+                .all_coincident_states_have_word(token, Symbol::terminal(other_index))
+            {
+                continue;
+            }
+
+            if !token_conflict_map.has_same_conflict_status(
+                token.index as usize,
+                word_token.index as usize,
+                other_index,
+            ) {
+                let name = str_pool.resolve(lexical_grammar.variables[token.index as usize].name);
+                let other_name = str_pool.resolve(lexical_grammar.variables[other_index].name);
+                // The conflict is not excluded globally: record the pair
+                // and let build_lex_table decide per state whether the raw
+                // keyword must stay in the main lexer alongside the word
+                // surrogate.
+                debug!(
+                    "Keywords - defer {name} (conflict with {other_name} deferred to per-state substitution)"
+                );
+                unsafe_pairs.push((token, Symbol::terminal(other_index)));
+            }
+        }
+
+        debug!(
+            "Keywords - include {}",
+            str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
+        );
+    }
+    (keywords, unsafe_pairs)
 }
 
 fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenConflictMap) {

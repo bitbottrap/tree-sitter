@@ -1670,6 +1670,204 @@ fn test_parsing_with_included_ranges_and_missing_tokens() {
 }
 
 #[test]
+fn test_keyword_boundary_after_reduction() {
+    let (parser_name, parser_code) = generate_parser(
+        r##"{
+            "name": "keyword_boundary_after_reduction",
+            "word": "word",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "program": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "comparison"},
+                    {"type": "SYMBOL", "name": "collision"},
+                    {"type": "SYMBOL", "name": "word"}
+                ]},
+                "comparison": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "if"},
+                    {"type": "SYMBOL", "name": "operand"},
+                    {"type": "STRING", "value": "is"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "STRING", "value": "#"}, {"type": "BLANK"}
+                    ]},
+                    {"type": "SYMBOL", "name": "word"}
+                ]},
+                "operand": {"type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "("},
+                        {"type": "SYMBOL", "name": "word"},
+                        {"type": "STRING", "value": ")"}
+                    ]},
+                    {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "a:"},
+                        {"type": "SYMBOL", "name": "immediate_identifier"}
+                    ]}
+                ]},
+                "collision": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "choose"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "STRING", "value": "is"},
+                        {"type": "SYMBOL", "name": "immediate_identifier"}
+                    ]},
+                    {"type": "STRING", "value": ";"}
+                ]},
+                "immediate_identifier": {"type": "IMMEDIATE_TOKEN", "content": {
+                    "type": "PATTERN", "value": "[a-zA-Z_0-9#]+"
+                }},
+                "word": {"type": "PATTERN", "value": "[a-zA-Z_][a-zA-Z_0-9#]*"}
+            }
+        }"##,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+
+    for source in [
+        "if (value) is# other",
+        "if a:value is# other",
+        "if (value) is other",
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "{source}: {}",
+            tree.root_node().to_sexp()
+        );
+        assert_eq!(
+            tree.root_node().named_child(0).unwrap().kind(),
+            "comparison"
+        );
+    }
+    for source in ["is#name", "isother"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(program (word))");
+        assert_eq!(
+            tree.root_node().named_child(0).unwrap().end_byte(),
+            source.len()
+        );
+    }
+}
+
+#[test]
+fn test_keyword_precedence_with_word() {
+    let (parser_name, parser_code) = generate_parser(
+        r##"{
+            "name": "keyword_precedence_with_word",
+            "word": "word",
+            "rules": {
+                "program": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "word"},
+                    {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "rgb"},
+                        {"type": "STRING", "value": "("},
+                        {"type": "STRING", "value": "1"},
+                        {"type": "STRING", "value": ")"}
+                    ]},
+                    {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "word"},
+                        {"type": "CHOICE", "members": [
+                            {"type": "SYMBOL", "name": "rgb"},
+                            {"type": "STRING", "value": "rgb-"}
+                        ]}
+                    ]}
+                ]},
+                "rgb": {"type": "STRING", "value": "rgb"},
+                "word": {"type": "TOKEN", "content": {
+                    "type": "PREC", "value": -1, "content": {
+                        "type": "PATTERN", "value": "[a-z0-9(,]+"
+                    }
+                }}
+            }
+        }"##,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+
+    let rgb = parser.parse("rgb(1)", None).unwrap();
+    assert!(
+        !rgb.root_node().has_error(),
+        "{}",
+        rgb.root_node().to_sexp()
+    );
+    assert_eq!(rgb.root_node().to_sexp(), "(program (rgb))");
+    let word = parser.parse("otherxyz", None).unwrap();
+    assert_eq!(word.root_node().to_sexp(), "(program (word))");
+}
+
+#[test]
+fn test_keyword_reserved_immediate() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "keyword_reserved_immediate",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "reserved": {"global": [
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "match"}}
+            ]},
+            "rules": {
+                "program": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "definition"},
+                    {"type": "SYMBOL", "name": "match_expression"},
+                    {"type": "SYMBOL", "name": "dot_match"}
+                ]},
+                "definition": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "def"},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "="},
+                    {"type": "SYMBOL", "name": "identifier"}
+                ]},
+                "match_expression": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "operand"},
+                    {"type": "STRING", "value": "match"},
+                    {"type": "STRING", "value": "{}"}
+                ]},
+                "operand": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "("},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": ")"}
+                ]},
+                "dot_match": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "."},
+                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "match"}},
+                    {"type": "STRING", "value": "{}"}
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        }"#,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+
+    for (source, has_error) in [
+        ("(value) match {}", false),
+        ("value.match {}", false),
+        ("def value = matcher", false),
+        ("def match = value", true),
+        ("def value = match", true),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(
+            tree.root_node().has_error(),
+            has_error,
+            "{source}: {}",
+            tree.root_node().to_sexp()
+        );
+    }
+    for source in ["value. match {}", "value.\nmatch {}"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(tree.root_node().has_error(), "{source}");
+    }
+}
+
+#[test]
 fn test_grammars_that_can_hang_on_eof() {
     let (parser_name, parser_code) = generate_parser(
         r#"
