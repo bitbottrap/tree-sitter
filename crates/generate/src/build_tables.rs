@@ -355,23 +355,8 @@ fn identify_keywords(
     }
 
     let word_token = word_token.unwrap();
-    // Keyword exclusion: a keyword candidate that the third filter below would
-    // exclude is not dropped globally; it is INCLUDED in the global keyword
-    // table and each (keyword, other) conflict pair is recorded so
-    // build_lex_table can retain the raw keyword in exactly the parse states
-    // with the unsafe structure (keyword + conflicting token valid, `word`
-    // absent). The global exclusion becomes a per-state decision, which fixes
-    // keyword-split misparses (bash `do`/`in`, vim `is#`, v casts) without
-    // giving up keyword extraction elsewhere.
     let mut unsafe_pairs: Vec<(Symbol, Symbol)> = Vec::new();
     let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
-    // Bookkeeping for the phantom-conflict guard in the third filter:
-    // candidates the immediate-token guard demotes (they passed the
-    // alphabetical + same/different-string tests and failed only
-    // `is_immediate`). Filter 3 skips keyword candidates as conflict
-    // partners; applying the same skip to guard-demoted tokens stops the
-    // guard from manufacturing filter-3 conflicts that would not otherwise
-    // exist.
     let mut guard_demoted = TokenSet::new();
 
     // First find all of the candidate keyword tokens: tokens that start with
@@ -390,19 +375,7 @@ fn identify_keywords(
                     "Keywords - add candidate {}",
                     str_pool.resolve(lexical_grammar.variables[i].name)
                 );
-                // A keyword must be lexable from a fresh, context-free lexing
-                // start: it has to be recognizable as a standalone word
-                // wherever it appears. A `token.immediate(...)` token is the
-                // opposite - it is only ever produced as a *continuation* of a
-                // preceding token (e.g. a numeric-literal suffix like the `l`
-                // in `0l`). The keyword lex DFA is a separate, context-free
-                // matcher with no whitespace/lookbehind, so runtime keyword
-                // recovery would match the bare suffix anywhere and steal
-                // single-letter identifiers (fsharp `let l = max 0 l`).
-                // Without this guard, float-suffix tokens like fsharp's
-                // `lf`/`LF` would be extracted as keywords. Tokens the author
-                // explicitly reserved as reserved words stay in the keyword DFA
-                // regardless.
+                // Immediate tokens can't be context-free keywords.
                 let explicitly_reserved = syntax_grammar
                     .reserved_word_sets
                     .iter()
@@ -452,14 +425,6 @@ fn identify_keywords(
             if keyword_candidates.contains(Symbol::terminal(other_index)) {
                 continue;
             }
-            // Phantom-conflict guard: the candidate skip above covers
-            // every keyword token, and the tokens the immediate guard
-            // demotes would have been candidates without it. Treat those
-            // as skipped too, so the guard cannot manufacture a filter-3
-            // conflict that would not otherwise exist. The keyword still
-            // reaches the global keyword DFA unchanged; only the phantom
-            // unsafe pair (and its downstream main-DFA retention) is
-            // suppressed.
             if guard_demoted.contains(Symbol::terminal(other_index)) {
                 debug!(
                     "Keywords - skip phantom conflict {} ~ {} (partner was demoted by the immediate guard)",
@@ -485,10 +450,6 @@ fn identify_keywords(
             ) {
                 let name = str_pool.resolve(lexical_grammar.variables[token.index as usize].name);
                 let other_name = str_pool.resolve(lexical_grammar.variables[other_index].name);
-                // The conflict is not excluded globally: record the pair
-                // and let build_lex_table decide per state whether the raw
-                // keyword must stay in the main lexer alongside the word
-                // surrogate.
                 debug!(
                     "Keywords - defer {name} (conflict with {other_name} deferred to per-state substitution)"
                 );

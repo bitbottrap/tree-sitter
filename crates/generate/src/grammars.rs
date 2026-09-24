@@ -61,11 +61,6 @@ pub struct LexicalVariable {
     pub kind: VariableType,
     pub implicit_precedence: i32,
     pub start_state: u32,
-    /// True when the token was declared via `token.immediate(...)`. Such a
-    /// token is only ever produced as a *continuation* of a preceding token
-    /// (the main lexer never starts a token position with it), so it can never
-    /// be a context-free keyword. Threaded here from `expand_tokens` where the
-    /// `is_main_token` metadata is otherwise discarded.
     pub is_immediate: bool,
 }
 
