@@ -28,9 +28,7 @@ bitflags! {
 pub struct TokenConflictMap {
     n: usize,
     status_matrix: Vec<TokenConflictStatus>,
-    #[expect(dead_code, reason = "Debugging aid")]
     following_tokens: Vec<TokenSet>,
-    #[allow(dead_code, reason = "Debugging/test aid")]
     starting_chars_by_index: Vec<CharacterSet>,
     #[expect(dead_code, reason = "Debugging aid")]
     following_chars_by_index: Vec<CharacterSet>,
@@ -44,6 +42,16 @@ pub struct TokenConflictMap {
 }
 
 impl TokenConflictMap {
+    #[must_use]
+    pub fn starting_chars(&self) -> &[CharacterSet] {
+        &self.starting_chars_by_index
+    }
+
+    #[must_use]
+    pub fn following_tokens(&self, token_index: usize) -> &TokenSet {
+        &self.following_tokens[token_index]
+    }
+
     /// Create a token conflict map based on a lexical grammar, which describes the structure
     /// of each token, and a `following_token` map, which indicates which tokens may appear
     /// immediately after each other token.

@@ -1,0 +1,69 @@
+================================================================================
+V match-arm ast selector is not an as cast
+================================================================================
+ast.name
+---
+(program (selector_expression (identifier) (identifier)))
+
+================================================================================
+V int selector is not an in expression
+================================================================================
+int.name
+---
+(program (selector_expression (identifier) (identifier)))
+
+================================================================================
+V invalid prefix remains a whole selector
+================================================================================
+invalid_value.name
+---
+(program (selector_expression (identifier) (identifier)))
+
+================================================================================
+V incident prefix remains a whole selector
+================================================================================
+incident.name
+---
+(program (selector_expression (identifier) (identifier)))
+
+================================================================================
+V is_sorted selector is not an is expression
+================================================================================
+is_sorted.name
+---
+(program (selector_expression (identifier) (identifier)))
+
+================================================================================
+V is_dev selector is not an is expression
+================================================================================
+is_dev.name
+---
+(program (selector_expression (identifier) (identifier)))
+
+================================================================================
+V is_ascending selector is not an is expression
+================================================================================
+is_ascending.name
+---
+(program (selector_expression (identifier) (identifier)))
+
+================================================================================
+An actual as keyword still introduces a cast
+================================================================================
+as ast.name
+---
+(program (as_type_cast_expression (selector_expression (identifier) (identifier))))
+
+================================================================================
+An actual in keyword still introduces membership
+================================================================================
+in int.name
+---
+(program (membership_expression (selector_expression (identifier) (identifier))))
+
+================================================================================
+An actual is keyword still introduces a type test
+================================================================================
+is is_sorted.name
+---
+(program (type_test_expression (selector_expression (identifier) (identifier))))

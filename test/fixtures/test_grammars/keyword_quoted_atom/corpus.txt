@@ -1,0 +1,65 @@
+================================================================================
+Elixir quoted module atom after a multiline assignment
+================================================================================
+value =
+	:"Elixir.IEx.Pry".__next__()
+---
+(source (binary_operator (identifier) (call (dot (quoted_atom (quoted_content)) (identifier)) (arguments))))
+
+================================================================================
+Elixir quoted operator atoms retain their external colon after list newlines
+================================================================================
+operators = [
+	:"<|>",
+	:"^^^",
+	:"//"
+]
+---
+(source (binary_operator (identifier) (list (quoted_atom (quoted_content)) (quoted_atom (quoted_content)) (quoted_atom (quoted_content)))))
+
+================================================================================
+Elixir quoted enum text after a multiline assignment can contain single quotes
+================================================================================
+states =
+	:"ENUM('suspended', 'available', 'scheduled')"
+---
+(source (binary_operator (identifier) (quoted_atom (quoted_content))))
+
+================================================================================
+Elixir interpolated quoted atom after an argument newline
+================================================================================
+insert(
+	value,
+	:"email.#{index}"
+)
+---
+(source (call (identifier) (arguments (identifier) (quoted_atom (quoted_content) (interpolation (identifier))))))
+
+================================================================================
+Single-quoted atom uses the same external boundary
+================================================================================
+:'Elixir.IEx.Pry'
+---
+(source (quoted_atom (quoted_content)))
+
+================================================================================
+An ordinary string is not a quoted atom
+================================================================================
+"Elixir.IEx.Pry"
+---
+(source (string (quoted_content)))
+
+================================================================================
+An unquoted atom keeps the internal lexer path
+================================================================================
+:state
+---
+(source (atom))
+
+================================================================================
+Whitespace between the colon and quote is not a quoted atom
+:error
+================================================================================
+: "state"
+---
+(source (ERROR) (string (quoted_content)))

@@ -1,0 +1,47 @@
+================================================================================
+Rego explicit membership between two references is valid
+================================================================================
+{input.b in input.c}
+---
+(program (set (membership (ref (var) (var)) (ref (var) (var)))))
+
+================================================================================
+Rego set cannot invent an in operator from the following input reference
+:error
+================================================================================
+{input.b
+input.c}
+---
+(program (set (ERROR (ref (var) (var))) (ref (var) (var))))
+
+================================================================================
+Rego set cannot invent an in operator from an includes identifier
+:error
+================================================================================
+{input.b
+includes_value.c}
+---
+(program (set (ERROR (ref (var) (var))) (ref (var) (var))))
+
+================================================================================
+Rego includes function stays a new declaration after a call-valued assignment
+================================================================================
+combined_flags := sprintf(flags)
+includes_no_install_recommends(command) if {input.value}
+---
+(program (assignment (var) (call (var) (var))) (definition (var) (var) (set (ref (var) (var)))))
+
+================================================================================
+Rego includes assume-yes function stays a new declaration
+================================================================================
+combined_flags := sprintf(flags)
+includes_assume_yes(command) if {input.value}
+---
+(program (assignment (var) (call (var) (var))) (definition (var) (var) (set (ref (var) (var)))))
+
+================================================================================
+An actual in expression can belong to a conditional assignment
+================================================================================
+combined_flags := sprintf(flags) in includes_value(command) if {input.value}
+---
+(program (assignment (var) (membership (call (var) (var)) (call (var) (var))) (set (ref (var) (var)))))

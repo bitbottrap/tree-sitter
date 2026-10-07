@@ -1,0 +1,97 @@
+================================================================================
+Reserved immediate keyword remains valid alongside a word alternative
+================================================================================
+.match!
+---
+(program (keyword_member))
+
+================================================================================
+Word alternative accepts an unreserved word
+================================================================================
+.other?
+---
+(program (word_member (word)))
+
+================================================================================
+Word alternative allows whitespace before an unreserved word
+================================================================================
+. other?
+---
+(program (word_member (word)))
+
+================================================================================
+Reserved keyword prefix remains a valid word
+================================================================================
+.matcher?
+---
+(program (word_member (word)))
+
+================================================================================
+Word alternative must not allow whitespace before a reserved immediate keyword
+:error
+================================================================================
+. match!
+---
+(ERROR)
+
+================================================================================
+Word alternative must not allow a newline before a reserved immediate keyword
+:error
+================================================================================
+.
+match!
+---
+(ERROR)
+
+================================================================================
+Reserved spelling cannot be accepted through the word alternative
+:error
+================================================================================
+.match?
+---
+(ERROR)
+
+================================================================================
+Whitespace does not allow the word alternative to bypass reservation
+:error
+================================================================================
+. match?
+---
+(ERROR)
+
+================================================================================
+Reserved immediate token must not steal an adjacent ordinary keyword
+================================================================================
+(value)match!
+---
+(program (ordinary_keyword (word)))
+
+================================================================================
+Ordinary keyword remains valid after whitespace
+================================================================================
+(value) match!
+---
+(program (ordinary_keyword (word)))
+
+================================================================================
+Ordinary keyword remains valid after a newline
+================================================================================
+(value)
+match!
+---
+(program (ordinary_keyword (word)))
+
+================================================================================
+Ordinary word alternative remains valid alongside the ordinary keyword
+================================================================================
+(value)other?
+---
+(program (ordinary_word (word) (word)))
+
+================================================================================
+Ordinary word alternative does not bypass keyword reservation
+:error
+================================================================================
+(value)match?
+---
+(ERROR (word))

@@ -261,6 +261,7 @@ mod tests {
             kind: VariableType::Anonymous,
             implicit_precedence: 0,
             start_state: 0,
+            is_immediate: false,
         });
         symbol
     }

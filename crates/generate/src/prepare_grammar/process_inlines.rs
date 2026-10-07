@@ -544,6 +544,7 @@ mod tests {
             kind: VariableType::Named,
             implicit_precedence: 0,
             start_state: 0,
+            is_immediate: false,
         }];
         let mut out = ProductionStore::default();
 
@@ -566,6 +567,7 @@ mod tests {
                 kind: VariableType::Anonymous,
                 implicit_precedence: 0,
                 start_state: 0,
+                is_immediate: false,
             })
             .collect()
     }

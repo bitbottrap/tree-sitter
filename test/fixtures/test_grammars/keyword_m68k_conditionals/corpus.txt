@@ -1,0 +1,83 @@
+================================================================================
+Balanced conditional closes at its declared terminator
+================================================================================
+	if enabled
+		nop
+	endif
+---
+(source_file (conditional (control_mnemonic) (symbol) (element_list (instruction (instruction_mnemonic))) (control_mnemonic)))
+
+================================================================================
+Balanced nested conditionals keep distinct body ownership
+================================================================================
+	if outer
+		if inner
+			nop
+		endif
+	endif
+---
+(source_file (conditional (control_mnemonic) (symbol) (element_list (conditional (control_mnemonic) (symbol) (element_list (instruction (instruction_mnemonic))) (control_mnemonic))) (control_mnemonic)))
+
+================================================================================
+Else separates the consequent and alternate bodies
+================================================================================
+	if enabled
+		first
+	else
+		second
+	endif
+---
+(source_file (conditional (control_mnemonic) (symbol) (element_list (macro_call (symbol))) (control_mnemonic) (element_list (macro_call (symbol))) (control_mnemonic)))
+
+================================================================================
+Keyword-prefixed macro symbols remain whole outside a conditional
+================================================================================
+	endif_label
+	elsewhere
+	if_enabled
+---
+(source_file (macro_call (symbol)) (macro_call (symbol)) (macro_call (symbol)))
+
+================================================================================
+Surplus terminators retain a documented local nesting snapshot
+================================================================================
+	if enabled
+		nop
+	endif
+	endif
+	endif
+---
+(source_file (conditional (control_mnemonic) (symbol) (element_list (instruction (instruction_mnemonic)) (macro_call (symbol)) (macro_call (symbol))) (control_mnemonic)))
+
+================================================================================
+Cleaned clearRAM3 corpus preserves the local ambiguous terminator association
+================================================================================
+clearRAM3 macro startaddr,endaddr
+	if startaddr>endaddr
+	elseif startaddr=endaddr
+		warning "clearRAM is clearing zero bytes. Turning this into a nop instead."
+		exitm
+	endif
+	if ((startaddr)&$8000)=0
+		lea     (startaddr).l,a1
+	else
+		lea     (startaddr).w,a1
+	endif
+		moveq   #0,d0
+	if ((startaddr)&1)
+		move.b  d0,(a1)+
+	endif
+
+.clear
+	rept 16
+		move.l  d0,(a1)+
+	endr
+		dbf     d1,.clear
+		move.w  d0,(a1)+
+	endif
+		move.b  d0,(a1)+
+	endif
+	endm
+
+---
+(source_file (macro_definition (symbol) (control_mnemonic) (comment) (element_list (conditional (control_mnemonic) (binary_expression (symbol) (operator) (symbol)) (element_list (macro_call (symbol) (argument_list (binary_expression (symbol) (operator) (symbol)))) (macro_call (symbol) (argument_list (string_literal))) (macro_call (symbol)) (macro_call (symbol)) (conditional (control_mnemonic) (binary_expression (parenthesized_expression (binary_expression (parenthesized_expression (symbol)) (operator) (hexadecimal_literal))) (operator) (decimal_literal)) (element_list (instruction (instruction_mnemonic) (operand_list (absolute_value (symbol) (size)) (address_register)))) (control_mnemonic) (element_list (instruction (instruction_mnemonic) (operand_list (absolute_value (symbol) (size)) (address_register)))) (control_mnemonic)) (instruction (instruction_mnemonic) (operand_list (immediate_value (decimal_literal)) (data_register))) (conditional (control_mnemonic) (parenthesized_expression (binary_expression (parenthesized_expression (symbol)) (operator) (decimal_literal))) (element_list (instruction (instruction_mnemonic) (size) (operand_list (data_register) (indirect_address_postinc (address_register)))) (macro_call (symbol)) (label (symbol)) (repeat (control_mnemonic) (decimal_literal) (element_list (instruction (instruction_mnemonic) (size) (operand_list (data_register) (indirect_address_postinc (address_register))))) (control_mnemonic)) (instruction (instruction_mnemonic) (operand_list (data_register) (symbol))) (instruction (instruction_mnemonic) (size) (operand_list (data_register) (indirect_address_postinc (address_register))))) (control_mnemonic)) (instruction (instruction_mnemonic) (size) (operand_list (data_register) (indirect_address_postinc (address_register))))) (control_mnemonic))) (control_mnemonic)))

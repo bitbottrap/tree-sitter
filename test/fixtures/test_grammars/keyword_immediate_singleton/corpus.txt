@@ -1,0 +1,242 @@
+================================================================================
+Literal keyword does not split a longer word
+:cst
+================================================================================
+literal:matchbox
+---
+0:0  - 0:16   program
+0:0  - 0:16     literal
+0:0  - 0:8        "literal:"
+0:8  - 0:16       word `matchbox`
+
+================================================================================
+Fixed regex keyword does not split a longer word
+:cst
+================================================================================
+regex:matchbox
+---
+0:0  - 0:14   program
+0:0  - 0:14     fixed_regex
+0:0  - 0:6        "regex:"
+0:6  - 0:14       word `matchbox`
+
+================================================================================
+Singleton character class does not split a longer word
+:cst
+================================================================================
+class:matchbox
+---
+0:0  - 0:14   program
+0:0  - 0:14     singleton_class
+0:0  - 0:6        "class:"
+0:6  - 0:14       word `matchbox`
+
+================================================================================
+Duplicate alternatives do not split a longer word
+:cst
+================================================================================
+grouped:matchbox
+---
+0:0  - 0:16   program
+0:0  - 0:16     grouped
+0:0  - 0:8        "grouped:"
+0:8  - 0:16       word `matchbox`
+
+================================================================================
+Exact repetition does not split a longer word
+:cst
+================================================================================
+repeat:matchbox
+---
+0:0  - 0:15   program
+0:0  - 0:15     exact_repeat
+0:0  - 0:7        "repeat:"
+0:7  - 0:15       word `matchbox`
+
+================================================================================
+Literal keyword followed by a separate word
+================================================================================
+literal:match box
+---
+(program (literal (literal_statement (word))))
+
+================================================================================
+Fixed regex keyword followed by a separate word
+================================================================================
+regex:match box
+---
+(program (fixed_regex (regex_statement (word))))
+
+================================================================================
+Singleton character class followed by a separate word
+================================================================================
+class:match box
+---
+(program (singleton_class (class_statement (word))))
+
+================================================================================
+Duplicate alternatives followed by a separate word
+================================================================================
+grouped:match box
+---
+(program (grouped (grouped_statement (word))))
+
+================================================================================
+Exact repetition followed by a separate word
+================================================================================
+repeat:match box
+---
+(program (exact_repeat (repeat_statement (word))))
+
+================================================================================
+Whitespace before a longer word does not make it an immediate keyword
+:cst
+================================================================================
+regex: matchbox
+---
+0:0  - 0:15   program
+0:0  - 0:15     fixed_regex
+0:0  - 0:6        "regex:"
+0:7  - 0:15       word `matchbox`
+
+================================================================================
+Whitespace before a longer word preserves literal boundaries
+:cst
+================================================================================
+literal: matchbox
+---
+0:0  - 0:17   program
+0:0  - 0:17     literal
+0:0  - 0:8        "literal:"
+0:9  - 0:17       word `matchbox`
+
+================================================================================
+Whitespace before a longer word preserves singleton-class boundaries
+:cst
+================================================================================
+class: matchbox
+---
+0:0  - 0:15   program
+0:0  - 0:15     singleton_class
+0:0  - 0:6        "class:"
+0:7  - 0:15       word `matchbox`
+
+================================================================================
+Whitespace before a longer word preserves duplicate-alternative boundaries
+:cst
+================================================================================
+grouped: matchbox
+---
+0:0  - 0:17   program
+0:0  - 0:17     grouped
+0:0  - 0:8        "grouped:"
+0:9  - 0:17       word `matchbox`
+
+================================================================================
+Whitespace before a longer word preserves exact-repetition boundaries
+:cst
+================================================================================
+repeat: matchbox
+---
+0:0  - 0:16   program
+0:0  - 0:16     exact_repeat
+0:0  - 0:7        "repeat:"
+0:8  - 0:16       word `matchbox`
+
+================================================================================
+Multi-spelling regex keeps its prefix-token behavior
+:cst
+================================================================================
+general:matchbox
+---
+0:0  - 0:16   program
+0:0  - 0:16     general_regex
+0:0  - 0:8        "general:"
+0:8  - 0:16       general_statement
+0:8  - 0:13         prefix_keyword `match`
+0:13 - 0:16         word `box`
+
+================================================================================
+Optional suffix regex keeps its prefix-token behavior
+:cst
+================================================================================
+optional:matchbox
+---
+0:0  - 0:17   program
+0:0  - 0:17     optional_regex
+0:0  - 0:9        "optional:"
+0:9  - 0:17       optional_statement
+0:9  - 0:14         optional_keyword `match`
+0:14 - 0:17         word `box`
+
+================================================================================
+Distinct alternatives keep their prefix-token behavior
+:cst
+================================================================================
+alternative:matchbox
+---
+0:0  - 0:20   program
+0:0  - 0:20     alternative_regex
+0:0  - 0:12       "alternative:"
+0:12 - 0:20       alternative_statement
+0:12 - 0:17         alternative_keyword `match`
+0:17 - 0:20         word `box`
+
+================================================================================
+Multi-character-class fixed repetition keeps its prefix-token behavior
+:cst
+================================================================================
+length:matchbox
+---
+0:0  - 0:15   program
+0:0  - 0:15     fixed_length_regex
+0:0  - 0:7        "length:"
+0:7  - 0:15       length_statement
+0:7  - 0:12         length_keyword `match`
+0:12 - 0:15         word `box`
+
+================================================================================
+Literal keyword works when the word token is not valid
+================================================================================
+literal-only:match box
+---
+(program (required_literal (literal_statement (word))))
+
+================================================================================
+Fixed regex keyword works when the word token is not valid
+================================================================================
+regex-only:match box
+---
+(program (required_regex (regex_statement (word))))
+
+================================================================================
+Literal keyword cannot split a longer word even when the word token is not valid
+:error
+================================================================================
+literal-only:matchbox
+---
+(ERROR (word))
+
+================================================================================
+Fixed regex keyword cannot split a longer word even when the word token is not valid
+:error
+================================================================================
+regex-only:matchbox
+---
+(ERROR (word))
+
+================================================================================
+Whitespace prevents an immediate literal keyword
+:error
+================================================================================
+literal-only: match box
+---
+(ERROR (word) (word))
+
+================================================================================
+Whitespace prevents an immediate fixed regex keyword
+:error
+================================================================================
+regex-only: match box
+---
+(ERROR (word) (word))

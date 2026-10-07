@@ -6,7 +6,6 @@ log*.html
 .vscode
 .cache
 .zig-cache
-.direnv
 
 profile*
 fuzz-results

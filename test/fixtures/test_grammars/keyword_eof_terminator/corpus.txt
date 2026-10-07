@@ -1,0 +1,53 @@
+================================================================================
+Final caveat accepts the EOF terminator without a missing newline
+================================================================================
+caveat sample() { value }
+---
+(source_file (caveat (caveat_literal) (identifier) (parameters_list) (block_c (expression_statement (identifier)))))
+
+================================================================================
+Final caveat accepts an explicit newline
+================================================================================
+caveat sample() { value }
+
+---
+(source_file (caveat (caveat_literal) (identifier) (parameters_list) (block_c (expression_statement (identifier)))))
+
+================================================================================
+Final caveat accepts an explicit semicolon
+================================================================================
+caveat sample() { value };
+---
+(source_file (caveat (caveat_literal) (identifier) (parameters_list) (block_c (expression_statement (identifier)))))
+
+================================================================================
+EOF terminates only the final declaration
+================================================================================
+caveat first() { value }
+caveat second() { value }
+---
+(source_file (caveat (caveat_literal) (identifier) (parameters_list) (block_c (expression_statement (identifier)))) (caveat (caveat_literal) (identifier) (parameters_list) (block_c (expression_statement (identifier)))))
+
+================================================================================
+Final definition accepts EOF without inventing a newline
+================================================================================
+definition user {}
+---
+(source_file (definition (definition_literal) (identifier) (block)))
+
+================================================================================
+Definition relations and permissions are retained at EOF
+================================================================================
+definition document {
+	relation viewer: user
+	permission view = viewer
+}
+---
+(source_file (definition (definition_literal) (identifier) (block (relation (relation_literal) (identifier) (rel_expression (identifier))) (permission (permission_literal) (identifier) (perm_expression (identifier))))))
+
+================================================================================
+Final import accepts EOF without inventing a newline
+================================================================================
+import "schema.zed"
+---
+(source_file (import_statement (interpreted_string_literal)))

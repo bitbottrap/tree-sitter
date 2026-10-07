@@ -40,6 +40,13 @@ pub struct Tables {
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
 }
 
+#[derive(Default)]
+pub struct KeywordInfo {
+    tokens: TokenSet,
+    unsafe_pairs: Vec<(TerminalIndex, TerminalIndex)>,
+    immediate_tokens: TokenSet,
+}
+
 /// Gives each of a grammar's symbols a position. Positions follow `Symbol` order:
 /// - external tokens
 /// - [`Symbol::End`]
@@ -136,9 +143,9 @@ pub fn build_tables(
     let token_conflict_map = TokenConflictMap::new(lexical_grammar, following_tokens);
     let coincident_token_index =
         CoincidentTokenIndex::new(&parse_table, lexical_grammar, syntax_grammar.word_token);
-    let keywords = identify_keywords(
+    let keyword_info = identify_keywords(
+        syntax_grammar,
         lexical_grammar,
-        syntax_grammar.word_token,
         &token_conflict_map,
         &coincident_token_index,
         str_pool,
@@ -149,7 +156,7 @@ pub fn build_tables(
         lexical_grammar,
         &coincident_token_index,
         &token_conflict_map,
-        &keywords,
+        &keyword_info.tokens,
         str_pool,
     );
     populate_used_symbols(&mut parse_table, syntax_grammar, lexical_grammar);
@@ -159,7 +166,7 @@ pub fn build_tables(
         lexical_grammar,
         simple_aliases,
         &token_conflict_map,
-        &keywords,
+        &keyword_info.tokens,
         str_pool,
         optimizations,
     );
@@ -167,7 +174,7 @@ pub fn build_tables(
         &mut parse_table,
         syntax_grammar,
         lexical_grammar,
-        &keywords,
+        &keyword_info,
         &coincident_token_index,
         &token_conflict_map,
         str_pool,
@@ -414,22 +421,27 @@ fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &S
 }
 
 fn identify_keywords(
+    syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
-    word_token: Option<Symbol>,
     token_conflict_map: &TokenConflictMap,
     coincident_token_index: &CoincidentTokenIndex,
     str_pool: &StrPool,
-) -> TokenSet {
-    let word_token_index = match word_token.map(Symbol::view) {
+) -> KeywordInfo {
+    let word_token_index = match syntax_grammar.word_token.map(Symbol::view) {
         Some(SymbolView::Terminal(index)) => usize::from(index),
         // An external token has no lexical rule to compare with keywords.
-        None | Some(SymbolView::External(_)) => return TokenSet::new(),
+        None | Some(SymbolView::External(_)) => {
+            return KeywordInfo::default();
+        }
         // INVARIANT: Token extraction rejects a non-terminal word token.
         Some(SymbolView::End | SymbolView::EndOfNonTerminalExtra | SymbolView::NonTerminal(_)) => {
             unreachable!()
         }
     };
+    let mut unsafe_pairs: Vec<(TerminalIndex, TerminalIndex)> = Vec::new();
     let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
+    let mut guard_demoted = TokenSet::new();
+    let mut immediate_keywords = TokenSet::new();
 
     // First find all of the candidate keyword tokens: tokens that start with
     // letters or underscore and can match the same string as a word token.
@@ -447,6 +459,20 @@ fn identify_keywords(
                     "Keywords - add candidate {}",
                     str_pool.resolve(lexical_grammar.variables[i].name)
                 );
+                // Immediate tokens can't be context-free keywords.
+                if variable.is_immediate
+                    && token_has_single_spelling(lexical_grammar, variable.start_state)
+                {
+                    immediate_keywords.insert(Symbol::terminal(i));
+                }
+                if variable.is_immediate {
+                    debug!(
+                        "Keywords - exclude {} because it is an immediate token",
+                        str_pool.resolve(lexical_grammar.variables[i].name)
+                    );
+                    guard_demoted.insert(Symbol::terminal(i));
+                    return None;
+                }
                 Some(Symbol::terminal(i))
             } else {
                 None
@@ -476,49 +502,90 @@ fn identify_keywords(
         .map(Symbol::from)
         .collect::<TokenSet>();
 
-    // Exclude keyword candidates for which substituting the keyword capture
-    // token would introduce new lexical conflicts with other tokens.
-
-    keywords
-        .terminals()
-        .filter(|&token| {
-            let token_index = usize::from(token);
-            for other_index in 0..lexical_grammar.variables.len() {
-                if keyword_candidates.contains(Symbol::terminal(other_index)) {
-                    continue;
-                }
-
-                // If the word token was already valid in every state containing
-                // this keyword candidate, then substituting the word token won't
-                // introduce any new lexical conflicts.
-                if coincident_token_index
-                    .all_coincident_states_have_word(token, TerminalIndex::new(other_index as u32))
-                {
-                    continue;
-                }
-
-                if !token_conflict_map.has_same_conflict_status(
-                    token_index,
-                    word_token_index,
-                    other_index,
-                ) {
-                    debug!(
-                        "Keywords - exclude {} because of conflict with {}",
-                        str_pool.resolve(lexical_grammar.variables[token_index].name),
-                        str_pool.resolve(lexical_grammar.variables[other_index].name)
-                    );
-                    return false;
-                }
+    // Defer substitution conflicts to the states where they occur. Demoted
+    // immediate regexes only need this analysis if they have boundary guards.
+    for index in keywords.terminals().chain(
+        guard_demoted
+            .terminals()
+            .filter(|&token| immediate_keywords.contains(Symbol::from(token))),
+    ) {
+        let token_index = usize::from(index);
+        for other_index in 0..lexical_grammar.variables.len() {
+            if keyword_candidates.contains(Symbol::terminal(other_index)) {
+                continue;
+            }
+            if guard_demoted.contains(Symbol::terminal(other_index)) {
+                debug!(
+                    "Keywords - skip phantom conflict {} ~ {} (partner was demoted by the immediate guard)",
+                    str_pool.resolve(lexical_grammar.variables[token_index].name),
+                    str_pool.resolve(lexical_grammar.variables[other_index].name),
+                );
+                continue;
             }
 
-            debug!(
-                "Keywords - include {}",
-                str_pool.resolve(lexical_grammar.variables[token_index].name),
-            );
-            true
-        })
-        .map(Symbol::from)
-        .collect()
+            // If the word token was already valid in every state containing
+            // this keyword candidate, then substituting the word token won't
+            // introduce any new lexical conflicts.
+            if coincident_token_index
+                .all_coincident_states_have_word(index, TerminalIndex::new(other_index as u32))
+            {
+                continue;
+            }
+
+            if !token_conflict_map.has_same_conflict_status(
+                token_index,
+                word_token_index,
+                other_index,
+            ) {
+                let name = str_pool.resolve(lexical_grammar.variables[token_index].name);
+                let other_name = str_pool.resolve(lexical_grammar.variables[other_index].name);
+                debug!(
+                    "Keywords - defer {name} (conflict with {other_name} deferred to per-state substitution)"
+                );
+                unsafe_pairs.push((index, TerminalIndex::new(other_index as u32)));
+            }
+        }
+
+        debug!(
+            "Keywords - include {}",
+            str_pool.resolve(lexical_grammar.variables[token_index].name),
+        );
+    }
+    KeywordInfo {
+        tokens: keywords,
+        unsafe_pairs,
+        immediate_tokens: immediate_keywords,
+    }
+}
+
+/// Whether the token starting at `start_state` matches exactly one fixed string.
+///
+/// A single-spelling token has one path through its NFA from the start state to a
+/// completion, with exactly one character on every step. Tokens like that can be
+/// guarded by the word-boundary machinery; regexes with multiple spellings cannot.
+fn token_has_single_spelling(lexical_grammar: &LexicalGrammar, start_state: u32) -> bool {
+    let mut cursor = NfaCursor::new(&lexical_grammar.nfa, vec![start_state]);
+    for length in 0..=lexical_grammar.nfa.states.len() {
+        let transitions = cursor
+            .transitions()
+            .into_iter()
+            .filter(|transition| !transition.is_separator)
+            .collect::<Vec<_>>();
+        if cursor.completions().next().is_some() {
+            return length > 0 && transitions.is_empty();
+        }
+        let mut characters = CharacterSet::empty();
+        let mut next_states = Vec::new();
+        for transition in transitions {
+            characters = characters.add(&transition.characters);
+            next_states.extend(transition.states);
+        }
+        if characters.char_codes().take(2).count() != 1 {
+            return false;
+        }
+        cursor.reset(next_states);
+    }
+    false
 }
 
 fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenConflictMap) {
@@ -649,4 +716,82 @@ fn all_chars_are_alphabetical(cursor: &NfaCursor) -> bool {
             chars.chars().all(|c| c.is_alphabetic() || c == '_')
         }
     })
+}
+
+#[cfg(test)]
+mod keyword_tests {
+    use super::*;
+    use crate::{
+        parse_grammar::parse_grammar, prepare_grammar::prepare_grammar, tables::ParseState,
+    };
+
+    #[test]
+    fn only_singleton_demoted_immediate_tokens_have_retention_metadata() {
+        for (pattern, has_boundary_guard) in [("a", true), ("a+", false)] {
+            let grammar = serde_json::json!({
+                "name": "immediate_keyword_retention",
+                "word": "word",
+                "rules": {
+                    "program": {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "immediate"},
+                        {"type": "SYMBOL", "name": "follower"},
+                    ]},
+                    "immediate": {"type": "IMMEDIATE_TOKEN", "content": {
+                        "type": "PREC", "value": 1, "content": {
+                            "type": "PATTERN", "value": pattern,
+                        },
+                    }},
+                    "follower": {"type": "STRING", "value": "a#"},
+                    "word": {"type": "PATTERN", "value": "a+"},
+                },
+            });
+            let input = parse_grammar(&grammar.to_string(), &mut Vec::new()).unwrap();
+            let prepared = prepare_grammar(input, &mut Vec::new()).unwrap();
+            let syntax = &prepared.syntax_grammar;
+            let lexical = &prepared.lexical_grammar;
+            let token_index = |name| {
+                lexical
+                    .variables
+                    .iter()
+                    .position(|variable| prepared.str_pool.resolve(variable.name) == name)
+                    .unwrap()
+            };
+            let immediate_index = token_index("immediate");
+            let immediate = Symbol::terminal(immediate_index);
+            let follower_index = token_index("follower");
+            let mut state = ParseState::default();
+            state
+                .terminal_entries
+                .insert(immediate, ActionListId::default());
+            state
+                .terminal_entries
+                .insert(Symbol::terminal(follower_index), ActionListId::default());
+            let table = ParseTable {
+                states: vec![state],
+                ..ParseTable::default()
+            };
+            let conflicts =
+                TokenConflictMap::new(lexical, vec![TokenSet::new(); lexical.variables.len()]);
+            assert!(!conflicts.has_same_conflict_status(
+                immediate_index,
+                token_index("word"),
+                follower_index,
+            ));
+            let coincident = CoincidentTokenIndex::new(&table, lexical, syntax.word_token);
+            let info =
+                identify_keywords(syntax, lexical, &conflicts, &coincident, &prepared.str_pool);
+
+            assert!(!info.tokens.contains(immediate));
+            assert_eq!(
+                info.immediate_tokens.contains(immediate),
+                has_boundary_guard
+            );
+            assert_eq!(
+                info.unsafe_pairs
+                    .iter()
+                    .any(|&(keyword, _)| Symbol::from(keyword) == immediate),
+                has_boundary_guard,
+            );
+        }
+    }
 }

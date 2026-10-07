@@ -249,6 +249,44 @@ impl TokenExtractor {
             .map(|i| Symbol::terminal(self.rewrites[i].1 as usize))
             .or_else(|| pool.node(id).symbol())
     }
+
+    fn reservation_token(&mut self, pool: &mut RulePool, symbol: Symbol) -> Symbol {
+        let Some(index) = symbol.terminal_index() else {
+            return symbol;
+        };
+        let token = self.lexical[usize::from(index)].clone();
+        let Rule::Metadata { params, rule } = pool.node(token.root) else {
+            return symbol;
+        };
+        let mut params = pool.params(params);
+        if !params.is_main_token {
+            return symbol;
+        }
+        // Reservation recognizes a spelling regardless of adjacency. Keep the
+        // immediate syntax token separate so keyword capture cannot authorize it.
+        params.is_main_token = false;
+        let root = if (MetadataParams {
+            is_token: false,
+            ..params
+        }) == MetadataParams::default()
+        {
+            rule
+        } else {
+            let params = pool.push_params(params);
+            pool.push_node(Rule::Metadata { params, rule })
+        };
+        let index = self.find(pool, root).unwrap_or_else(|| {
+            let index = self.lexical.len() as u32;
+            self.lexical.push(LexicalToken { root, ..token });
+            self.usage_counts.push(0);
+            self.memo
+                .entry(pool.subtree_hash(root))
+                .or_default()
+                .push(index);
+            index
+        });
+        Symbol::terminal(index as usize)
+    }
 }
 
 /// Token extraction's pending result.
@@ -511,13 +549,13 @@ pub(super) fn extract_tokens<'g>(
     for set in &g.reserved_sets {
         let mut symbols = Vec::with_capacity(set.roots.len());
         for &root in &set.roots {
-            if let Some(s) = extractor
+            let symbol = if let Some(s) = extractor
                 .symbol_after_rewrites(&g.pool, root)
                 .map(replace_symbol)
             {
-                symbols.push(s);
+                s
             } else if let Some(i) = extractor.find(&g.pool, root) {
-                symbols.push(Symbol::terminal(i as usize));
+                Symbol::terminal(i as usize)
             } else {
                 let inner = match g.pool.node(root) {
                     Rule::Metadata { rule, .. } => g.pool.node(rule),
@@ -527,7 +565,12 @@ pub(super) fn extract_tokens<'g>(
                     Rule::String(s) | Rule::Pattern(s, _) => g.pool.resolve(s).to_string(),
                     _ => "unknown".to_string(),
                 };
-                Err(ExtractTokensError::NonTokenReservedWord(token_name.into()))?;
+                return Err(ExtractTokensError::NonTokenReservedWord(token_name.into()));
+            };
+            symbols.push(symbol);
+            let reservation = extractor.reservation_token(&mut g.pool, symbol);
+            if reservation != symbol {
+                symbols.push(reservation);
             }
         }
         reserved_sets.push((set.name, symbols));

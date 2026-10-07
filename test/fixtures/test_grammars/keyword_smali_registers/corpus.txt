@@ -1,0 +1,60 @@
+================================================================================
+Immediate variable and parameter registers remain valid when adjacent
+================================================================================
+{v0,p1}
+---
+(program (register_list (register (variable)) (register (parameter))))
+
+================================================================================
+Immediate parameter and variable registers remain valid when adjacent
+================================================================================
+{p2,v3}
+---
+(program (register_list (register (parameter)) (register (variable))))
+
+================================================================================
+Register-shaped spelling is a whole word outside instruction syntax
+================================================================================
+v012
+---
+(program (identifier))
+
+================================================================================
+Parameter-shaped spelling is a whole word outside instruction syntax
+================================================================================
+p123
+---
+(program (identifier))
+
+================================================================================
+Whitespace cannot authorize an immediate register
+:error
+================================================================================
+move v0,p1
+---
+(ERROR (ERROR (identifier)) (register (parameter)))
+
+================================================================================
+Whitespace after a comma cannot authorize an immediate register
+:error
+================================================================================
+movev0, p1
+---
+(program (ERROR (identifier)) (identifier))
+
+================================================================================
+A newline cannot authorize an immediate register
+:error
+================================================================================
+move
+v0,p1
+---
+(ERROR (ERROR (identifier)) (register (parameter)))
+
+================================================================================
+A register suffix cannot split a longer opcode-shaped word
+:error
+================================================================================
+movev0,p1
+---
+(program (identifier) (ERROR (parameter)))

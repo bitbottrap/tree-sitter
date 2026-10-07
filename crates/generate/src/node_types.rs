@@ -3273,6 +3273,7 @@ mod tests {
                 kind: VariableType::Named,
                 implicit_precedence: 0,
                 start_state: 0,
+                is_immediate: false,
             });
         }
         lexical_grammar

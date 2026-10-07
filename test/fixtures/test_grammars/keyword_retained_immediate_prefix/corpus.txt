@@ -1,0 +1,37 @@
+================================================================================
+Long keyword followed by a separate word
+================================================================================
+value.othermatch box
+---
+(program (word) (long_statement (word)))
+
+================================================================================
+Short retained keyword followed by its delimiter
+================================================================================
+value.other(box)
+---
+(program (word) (short_statement (word)))
+
+================================================================================
+Retained short prefix cannot bypass a pending longer keyword boundary
+:error
+================================================================================
+value.othermatchbox
+---
+(ERROR (word) (word))
+
+================================================================================
+Retained prefix still requires its delimiter
+:error
+================================================================================
+value.otherbox
+---
+(ERROR (word) (word))
+
+================================================================================
+Whitespace before an immediate retained prefix is rejected
+:error
+================================================================================
+value. other(box)
+---
+(ERROR (word) (word))

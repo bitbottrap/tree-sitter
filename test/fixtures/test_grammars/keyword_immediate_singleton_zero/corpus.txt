@@ -1,0 +1,144 @@
+================================================================================
+Literal keyword preserves a longer word at zero precedence
+:cst
+================================================================================
+literal:matchbox
+---
+0:0  - 0:16   program
+0:0  - 0:16     literal
+0:0  - 0:8        "literal:"
+0:8  - 0:16       word `matchbox`
+
+================================================================================
+Fixed regex preserves a longer word at zero precedence
+:cst
+================================================================================
+regex:matchbox
+---
+0:0  - 0:14   program
+0:0  - 0:14     fixed_regex
+0:0  - 0:6        "regex:"
+0:6  - 0:14       word `matchbox`
+
+================================================================================
+Singleton class preserves a longer word at zero precedence
+:cst
+================================================================================
+class:matchbox
+---
+0:0  - 0:14   program
+0:0  - 0:14     singleton_class
+0:0  - 0:6        "class:"
+0:6  - 0:14       word `matchbox`
+
+================================================================================
+Duplicate alternatives preserve a longer word at zero precedence
+:cst
+================================================================================
+grouped:matchbox
+---
+0:0  - 0:16   program
+0:0  - 0:16     grouped
+0:0  - 0:8        "grouped:"
+0:8  - 0:16       word `matchbox`
+
+================================================================================
+Exact repetition preserves a longer word at zero precedence
+:cst
+================================================================================
+repeat:matchbox
+---
+0:0  - 0:15   program
+0:0  - 0:15     exact_repeat
+0:0  - 0:7        "repeat:"
+0:7  - 0:15       word `matchbox`
+
+================================================================================
+Literal keyword preserves a longer word after whitespace
+:cst
+================================================================================
+literal: matchbox
+---
+0:0  - 0:17   program
+0:0  - 0:17     literal
+0:0  - 0:8        "literal:"
+0:9  - 0:17       word `matchbox`
+
+================================================================================
+Fixed regex preserves a longer word after whitespace
+:cst
+================================================================================
+regex: matchbox
+---
+0:0  - 0:15   program
+0:0  - 0:15     fixed_regex
+0:0  - 0:6        "regex:"
+0:7  - 0:15       word `matchbox`
+
+================================================================================
+Singleton class preserves a longer word after whitespace
+:cst
+================================================================================
+class: matchbox
+---
+0:0  - 0:15   program
+0:0  - 0:15     singleton_class
+0:0  - 0:6        "class:"
+0:7  - 0:15       word `matchbox`
+
+================================================================================
+Duplicate alternatives preserve a longer word after whitespace
+:cst
+================================================================================
+grouped: matchbox
+---
+0:0  - 0:17   program
+0:0  - 0:17     grouped
+0:0  - 0:8        "grouped:"
+0:9  - 0:17       word `matchbox`
+
+================================================================================
+Exact repetition preserves a longer word after whitespace
+:cst
+================================================================================
+repeat: matchbox
+---
+0:0  - 0:16   program
+0:0  - 0:16     exact_repeat
+0:0  - 0:7        "repeat:"
+0:8  - 0:16       word `matchbox`
+
+================================================================================
+Literal keyword followed by a separate word at zero precedence
+================================================================================
+literal:match box
+---
+(program (literal (literal_statement (word))))
+
+================================================================================
+Fixed regex followed by a separate word at zero precedence
+================================================================================
+regex:match box
+---
+(program (fixed_regex (regex_statement (word))))
+
+================================================================================
+Singleton class followed by a separate word at zero precedence
+================================================================================
+class:match box
+---
+(program (singleton_class (class_statement (word))))
+
+================================================================================
+Duplicate alternatives followed by a separate word at zero precedence
+================================================================================
+grouped:match box
+---
+(program (grouped (grouped_statement (word))))
+
+================================================================================
+Exact repetition followed by a separate word at zero precedence
+================================================================================
+repeat:match box
+---
+(program (exact_repeat (repeat_statement (word))))

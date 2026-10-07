@@ -1,0 +1,70 @@
+================================================================================
+Short regex spelling after operand reduction
+================================================================================
+if (value) is# other
+---
+(program (comparison (operand (word)) (word)))
+
+================================================================================
+Longer regex spelling after operand reduction
+================================================================================
+if (value) isb# other
+---
+(program (comparison (operand (word)) (word)))
+
+================================================================================
+Immediate identifier operand followed by reduction
+================================================================================
+if a:value is# other
+---
+(program (comparison (operand (immediate_identifier)) (word)))
+
+================================================================================
+No continuation-only follower
+================================================================================
+if (value) is other
+---
+(program (comparison (operand (word)) (word)))
+
+================================================================================
+Regex keyword prefix stays inside a whole word outside comparison
+:cst
+================================================================================
+isb#name
+---
+0:0 - 0:8   program
+0:0 - 0:8     word `isb#name`
+
+================================================================================
+Short regex spelling stays inside a whole word outside comparison
+:cst
+================================================================================
+is#name
+---
+0:0 - 0:7   program
+0:0 - 0:7     word `is#name`
+
+================================================================================
+Regex keyword prefix without a delimiter remains a whole word
+:cst
+================================================================================
+isother
+---
+0:0 - 0:7   program
+0:0 - 0:7     word `isother`
+
+================================================================================
+Missing right operand is rejected
+:error
+================================================================================
+if (value) isb#
+---
+(program (comparison (operand (word)) (MISSING word)))
+
+================================================================================
+Unknown comparison keyword is rejected
+:error
+================================================================================
+if (value) other name
+---
+(program (ERROR (operand (word)) (word)) (word))

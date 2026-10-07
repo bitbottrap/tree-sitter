@@ -1,0 +1,98 @@
+================================================================================
+Ordinary keyword use after an operand
+================================================================================
+(value) match {}
+---
+(program (match_expression (operand (identifier))))
+
+================================================================================
+Reserved immediate keyword remains valid in member syntax
+================================================================================
+value.match {}
+---
+(program (dot_match (identifier)))
+
+================================================================================
+Reserved immediate keyword followed by a separate identifier
+================================================================================
+value.match box
+---
+(program (dot_match (identifier) (identifier)))
+
+================================================================================
+Non-reserved immediate keyword with zero precedence
+================================================================================
+value.keyword box
+---
+(program (dot_keyword (identifier) (identifier)))
+
+================================================================================
+Retained immediate prefix preserves a valid delimiter
+================================================================================
+value.other(box)
+---
+(program (dot_keyword (identifier) (identifier)))
+
+================================================================================
+Reserved keyword prefix is allowed in a definition value
+================================================================================
+def value = matcher
+---
+(program (definition (identifier) (identifier)))
+
+================================================================================
+Reserved keyword cannot be a definition name
+:error
+================================================================================
+def match = value
+---
+(ERROR (ERROR) (identifier))
+
+================================================================================
+Reserved keyword cannot be a definition value
+:error
+================================================================================
+def value = match
+---
+(ERROR (identifier))
+
+================================================================================
+Reserved immediate keyword cannot split a longer word
+:error
+================================================================================
+value.matchbox
+---
+(ERROR (identifier) (identifier))
+
+================================================================================
+Other immediate keyword cannot split a longer word at zero precedence
+:error
+================================================================================
+value.keywordbox
+---
+(ERROR (identifier) (identifier))
+
+================================================================================
+Whitespace prevents a non-reserved immediate keyword at zero precedence
+:error
+================================================================================
+value. keyword box
+---
+(ERROR (identifier) (identifier) (identifier))
+
+================================================================================
+Reserved status does not permit whitespace before an immediate keyword
+:error
+================================================================================
+value. match {}
+---
+(ERROR (identifier) (identifier))
+
+================================================================================
+Reserved status does not permit a newline before an immediate keyword
+:error
+================================================================================
+value.
+match {}
+---
+(ERROR (identifier) (identifier))
