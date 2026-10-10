@@ -11,8 +11,8 @@ export default grammar({
     operand: $ => seq("(", $.identifier, ")"),
     dot_match: $ => seq($.identifier, ".", token.immediate("match"), choice("{}", $.identifier)),
     dot_keyword: $ => seq($.identifier, ".", choice(
-      seq(token.immediate(prec(2, "keyword")), $.identifier),
-      seq(token.immediate(prec(1, "other")), "(", $.identifier, ")"),
+      seq(token.immediate("keyword"), $.identifier),
+      seq(token.immediate("other"), "(", $.identifier, ")"),
     )),
     identifier: _ => /[a-z][a-z(]*/,
   },

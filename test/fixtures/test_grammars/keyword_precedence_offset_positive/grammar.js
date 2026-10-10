@@ -8,10 +8,10 @@ export default grammar({
     program: $ => choice(
       $.word,
       seq($.keyword, $.word),
-      seq($.word, choice($.keyword, token(prec(offset, "a-")))),
-      seq(token(prec(offset, "!")), $.keyword, token(prec(offset, "b"))),
+      seq($.word, choice($.keyword, "a-")),
+      seq("!", $.keyword, "b"),
     ),
     keyword: _ => token(prec(1 + offset, "a")),
-    word: _ => token(prec(-1 + offset, /[a-z]+/)),
+    word: _ => /[a-z]+/,
   },
 });

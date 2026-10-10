@@ -24,11 +24,11 @@ module.exports = grammar({
   rules: {
     program: $ => choice(
       seq("for", $.variable_name, "in", repeat($.word), ";", "do", $.cmd, ";", "done"),
-      seq("select", $.variable_name, "in", repeat($.word), ";", "do", $.cmd, ";", "done"),
-      seq("case", $.word, "in", $.word, ")", optional($.cmd), ";;", "esac"),
+      seq("select", $.variable_name, "in", $.word, ";", "do", $.cmd, ";", "done"),
+      seq("case", $.word, "in", $.word, ")", ";;", "esac"),
       // Models bash's `$`-expansion: `in` and `-` valid while `word` is
       // absent. This is the state pair that makes stock exclude `in` globally.
-      seq("$", choice("-", "in", /[a-zA-Z_][a-zA-Z0-9_]*/))
+      seq("$", choice("-", "in"))
     ),
 
     variable_name: $ => /[a-zA-Z_][a-zA-Z0-9_]*/,

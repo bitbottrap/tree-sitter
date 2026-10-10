@@ -7,7 +7,7 @@ export default grammar({
       $.as_type_cast_expression,
       $.membership_expression,
       $.type_test_expression,
-      seq("!", $.identifier, choice($._as, "as-", $._in, "in-", $._is, "is-")),
+      seq($.identifier, choice($._as, "as-", $._in, "in-", $._is, "is-")),
     ),
     selector_expression: $ => seq($.identifier, ".", $.identifier),
     as_type_cast_expression: $ => seq($._as, $.selector_expression),

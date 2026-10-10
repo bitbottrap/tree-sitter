@@ -8,7 +8,7 @@ export default grammar({
       seq("?", $.keyword, "do", $.word),
       seq($.word, choice($.keyword, "is-")),
     ),
-    keyword: _ => token(prec(1, "is")),
+    keyword: _ => "is",
     word: _ => /[a-z][a-z#]*/,
   },
 });
