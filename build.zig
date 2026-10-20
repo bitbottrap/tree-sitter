@@ -22,12 +22,13 @@ pub fn build(b: *std.Build) !void {
         .name = "tree-sitter",
         .linkage = if (shared) .dynamic else .static,
         .root_module = tree_sitter,
+        .win32_module_definition = b.path(if (wasm) "lib/src/tree_sitter_wasm.def" else "lib/src/tree_sitter.def"),
     });
 
     if (amalgamated) {
         tree_sitter.addCSourceFile(.{
             .file = b.path("lib/src/lib.c"),
-            .flags = &.{"-std=c11"},
+            .flags = &.{ "-std=c11", "-fvisibility=hidden" },
         });
     } else {
         const files = try findSourceFiles(b, io);
@@ -35,7 +36,7 @@ pub fn build(b: *std.Build) !void {
         tree_sitter.addCSourceFiles(.{
             .root = b.path("lib/src"),
             .files = files,
-            .flags = &.{"-std=c11"},
+            .flags = &.{ "-std=c11", "-fvisibility=hidden" },
         });
     }
 
