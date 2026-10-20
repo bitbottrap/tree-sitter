@@ -45,6 +45,7 @@ pub(super) fn build_lex_table(
     } = keyword_info;
     let keyword_lex_table = if syntax_grammar.word_token.is_some() {
         let mut builder = LexTableBuilder::new(lexical_grammar);
+        builder.whole_match = true;
         builder.add_state_for_tokens(keywords, str_pool);
         builder.table
     } else {
@@ -354,6 +355,11 @@ struct LexTableBuilder<'a> {
     word_token: Option<TerminalIndex>,
     immediate_keywords: TokenSet,
     word_guards: Vec<TokenSet>,
+    /// The keyword lex table only runs over a word that has already been
+    /// captured, and its result is only used if it spans that whole word. No
+    /// two keywords match the same string, so a completed keyword must never
+    /// prune the continuation of a longer keyword.
+    whole_match: bool,
     cursor: NfaCursor<'a>,
     table: LexTable,
     state_queue: VecDeque<QueueEntry>,
@@ -367,6 +373,7 @@ impl<'a> LexTableBuilder<'a> {
             word_token: None,
             immediate_keywords: TokenSet::new(),
             word_guards: vec![TokenSet::new()],
+            whole_match: false,
             cursor: NfaCursor::new(&lexical_grammar.nfa, vec![]),
             table: LexTable::default(),
             state_queue: VecDeque::new(),
@@ -557,6 +564,7 @@ impl<'a> LexTableBuilder<'a> {
                 }
             }
             if let Some((completed_id, completed_precedence)) = completion
+                && !self.whole_match
                 && !(guard_id != 0
                     && (self.word_guards[guard_id].contains(Symbol::terminal(completed_id))
                         || (retained_immediate_complete && guarded_keyword_pending))
