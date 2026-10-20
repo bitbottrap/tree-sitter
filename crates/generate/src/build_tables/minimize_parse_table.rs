@@ -13,7 +13,7 @@ use crate::{
     OptLevel,
     dedup::{SplitCriterion, split_state_id_groups},
     grammars::{LexicalGrammar, SyntaxGrammar, VariableType},
-    rules::{AliasMap, Symbol, SymbolView, TokenSet},
+    rules::{AliasMap, Symbol, SymbolView, TerminalIndex, TokenSet},
     strpool::StrPool,
     tables::{
         ActionList, ActionListId, GotoAction, ParseAction, ParseState, ParseStateEntries,
@@ -103,6 +103,7 @@ pub fn minimize_parse_table(
     simple_aliases: &AliasMap,
     token_conflict_map: &TokenConflictMap,
     keywords: &TokenSet,
+    deferred_keyword_pairs: &[(TerminalIndex, TerminalIndex)],
     str_pool: &StrPool,
     optimizations: OptLevel,
 ) {
@@ -113,6 +114,7 @@ pub fn minimize_parse_table(
         indexer: SymbolIndexer::new(syntax_grammar, lexical_grammar),
         token_conflict_map,
         keywords,
+        deferred_keyword_pairs,
         simple_aliases,
         str_pool,
     };
@@ -135,6 +137,9 @@ struct ConflictBits {
     conflict_rows: Vec<u64>,
     /// The keyword set.
     keywords: Vec<u64>,
+    /// Per state: the deferred keywords that the lex table keeps as raw tokens there,
+    /// because a conflicting token is valid and the word token is not.
+    retained_keywords: Vec<u64>,
     /// Tokens that are also external tokens.
     internal_external: Vec<u64>,
     /// The grammar's word token, as a key and as its bit in a row, if it's a terminal. An
@@ -175,6 +180,28 @@ impl ConflictBits {
             }
         }
 
+        let mut retained_keywords = vec![0u64; minimizer.parse_table.states.len() * row_words];
+        if let Some(word) = minimizer.syntax_grammar.word_token
+            && !minimizer.deferred_keyword_pairs.is_empty()
+        {
+            for (s, state) in minimizer.parse_table.states.iter().enumerate() {
+                if state.terminal_entries.contains_key(word) {
+                    continue;
+                }
+                let base = s * row_words;
+                for &(keyword, other) in minimizer.deferred_keyword_pairs {
+                    if state.terminal_entries.contains_key(Symbol::from(keyword))
+                        && state.terminal_entries.contains_key(Symbol::from(other))
+                    {
+                        set(
+                            &mut retained_keywords[base..base + row_words],
+                            usize::from(keyword),
+                        );
+                    }
+                }
+            }
+        }
+
         let mut keywords = vec![0u64; row_words];
         for symbol in minimizer.keywords.iter() {
             if let Some(index) = symbol.terminal_index() {
@@ -197,6 +224,7 @@ impl ConflictBits {
             state_terminals,
             conflict_rows,
             keywords,
+            retained_keywords,
             internal_external,
             word_token: minimizer.syntax_grammar.word_token.and_then(|word| {
                 let index = word.terminal_index()?;
@@ -215,6 +243,12 @@ impl ConflictBits {
     fn get_state_row(&self, state: usize) -> &[u64] {
         let base = state * self.row_words;
         &self.state_terminals[base..base + self.row_words]
+    }
+
+    #[inline]
+    fn get_retained_keyword_row(&self, state: usize) -> &[u64] {
+        let base = state * self.row_words;
+        &self.retained_keywords[base..base + self.row_words]
     }
 }
 
@@ -685,6 +719,9 @@ enum Conflict {
     InternalExternalToken,
     /// The token conflicts lexically with this terminal, which the other state has.
     Lexical(usize),
+    /// The token is the word token, and the other state keeps this deferred keyword as a
+    /// raw token, which adding the word token would replace.
+    RetainedKeyword(usize),
 }
 
 struct Minimizer<'a> {
@@ -695,6 +732,9 @@ struct Minimizer<'a> {
     indexer: SymbolIndexer,
     token_conflict_map: &'a TokenConflictMap,
     keywords: &'a TokenSet,
+    /// Keywords whose substitution is decided per state, each with a token that makes
+    /// substituting it unsafe (see `identify_keywords`).
+    deferred_keyword_pairs: &'a [(TerminalIndex, TerminalIndex)],
     simple_aliases: &'a AliasMap,
     str_pool: &'a StrPool,
 }
@@ -1181,6 +1221,14 @@ impl Minimizer<'_> {
         }
 
         let new_token_is_word = bits.word_token.is_some_and(|(word, _)| word == new_token);
+        if new_token_is_word {
+            let retained = bits.get_retained_keyword_row(right_state.id as usize);
+            if let Some((w, &row_word)) = retained.iter().enumerate().find(|(_, row)| **row != 0) {
+                return Some(Conflict::RetainedKeyword(
+                    w * 64 + row_word.trailing_zeros() as usize,
+                ));
+            }
+        }
         let new_token_is_keyword = bits.word_token.is_some()
             && if new_token_is_terminal {
                 bits.keywords[new_token_index / 64] & (1 << (new_token_index % 64)) != 0
@@ -1247,6 +1295,11 @@ impl Minimizer<'_> {
             ),
             Conflict::Lexical(terminal) => debug!(
                 "split states {id1} {id2} - token {} conflicts with {}",
+                self.symbol_name(token.symbol(self.indexer)),
+                self.symbol_name(Symbol::terminal(terminal)),
+            ),
+            Conflict::RetainedKeyword(terminal) => debug!(
+                "split states {id1} {id2} - word token {} would replace retained keyword {}",
                 self.symbol_name(token.symbol(self.indexer)),
                 self.symbol_name(Symbol::terminal(terminal)),
             ),

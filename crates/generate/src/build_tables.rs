@@ -167,6 +167,7 @@ pub fn build_tables(
         simple_aliases,
         &token_conflict_map,
         &keyword_info.tokens,
+        &keyword_info.unsafe_pairs,
         str_pool,
         optimizations,
     );
