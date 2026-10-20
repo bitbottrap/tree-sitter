@@ -17,7 +17,8 @@ use crate::{
     rules::{Symbol, SymbolView, TerminalIndex, TokenSet},
     strpool::StrPool,
     tables::{
-        AdvanceAction, LexState, LexStateId, LexTable, ParseAction, ParseStateId, ParseTable,
+        AdvanceAction, LexState, LexStateId, LexTable, ParseAction, ParseState, ParseStateId,
+        ParseTable,
     },
 };
 
@@ -84,9 +85,50 @@ pub(super) fn build_lex_table(
     deferred_keywords.insert_all(immediate_keywords);
     for (i, state) in parse_table.states.iter().enumerate() {
         let mut retained = TokenSet::new();
+        let mut word_present_guarded = TokenSet::new();
         if let Some(word_token_index) = word_token_index {
             let word_token = syntax_grammar.word_token.unwrap();
             for &(pair_kw, other) in unsafe_keyword_pairs {
+                let keyword = Symbol::from(pair_kw);
+                // Where the word token is valid too, keep the raw keyword so that its
+                // lexical precedence over `other` still applies, and guard it so that it
+                // only matches a whole word. A token that may immediately follow the
+                // keyword and start with a word-continuation character would be swallowed
+                // by that guard, so such states keep substituting the word token.
+                if state.terminal_entries.contains_key(keyword)
+                    && state.terminal_entries.contains_key(Symbol::from(other))
+                    && state.terminal_entries.contains_key(word_token)
+                    && keywords.contains(keyword)
+                    && !retained.contains(keyword)
+                {
+                    let kw_index = usize::from(pair_kw);
+                    let continuation = continuation_cache.entry(kw_index).or_insert_with(|| {
+                        word_continuation_chars(lexical_grammar, word_token_index, kw_index)
+                    });
+                    let follow = adjacent_follow_token(
+                        parse_table,
+                        token_conflict_map,
+                        keywords,
+                        word_token,
+                        state,
+                        keyword,
+                        continuation,
+                        &syntax_grammar.extra_symbols,
+                    );
+                    if follow.is_none() {
+                        retained.insert(keyword);
+                        word_present_guarded.insert(keyword);
+                        if log::log_enabled!(log::Level::Debug) {
+                            debug!(
+                                "Keywords - guard {} in state {} because of conflict with {} (retaining raw keyword, word boundary enforced)",
+                                str_pool.resolve(lexical_grammar.variables[kw_index].name),
+                                i,
+                                str_pool
+                                    .resolve(lexical_grammar.variables[usize::from(other)].name),
+                            );
+                        }
+                    }
+                }
                 if state.terminal_entries.contains_key(Symbol::from(pair_kw))
                     && state.terminal_entries.contains_key(Symbol::from(other))
                     && !state.terminal_entries.contains_key(word_token)
@@ -106,9 +148,9 @@ pub(super) fn build_lex_table(
             for pair_kw in deferred_keywords.terminals() {
                 let kw_index = usize::from(pair_kw);
                 let keyword = Symbol::from(pair_kw);
-                let Some(&entry_id) = state.terminal_entries.get(keyword) else {
+                if !state.terminal_entries.contains_key(keyword) {
                     continue;
-                };
+                }
                 if retained.contains(keyword)
                     || (state.terminal_entries.contains_key(word_token)
                         && token_precedence[kw_index] <= token_precedence[word_token_index])
@@ -128,32 +170,16 @@ pub(super) fn build_lex_table(
                 if forced.is_empty() {
                     continue;
                 }
-                let actions = parse_table.action_lists.get(entry_id);
-                let reduction_follows = actions
-                    .iter()
-                    .any(|action| matches!(action, ParseAction::Reduce { .. }))
-                    .then(|| token_conflict_map.following_tokens(kw_index));
-                let culprit = actions
-                    .iter()
-                    .filter_map(|action| match action {
-                        ParseAction::Shift { state: after, .. } => Some(*after),
-                        _ => None,
-                    })
-                    .flat_map(|after| {
-                        parse_table.states[after as usize]
-                            .terminal_entries
-                            .keys()
-                            .copied()
-                    })
-                    .chain(reduction_follows.into_iter().flat_map(TokenSet::iter))
-                    .find(|&follow| {
-                        follow.terminal_index().is_some_and(|index| {
-                            follow != word_token
-                                && follow != Symbol::from(pair_kw)
-                                && !keywords.contains(follow)
-                                && starting_chars[usize::from(index)].does_intersect(&forced)
-                        })
-                    });
+                let culprit = adjacent_follow_token(
+                    parse_table,
+                    token_conflict_map,
+                    keywords,
+                    word_token,
+                    state,
+                    keyword,
+                    &forced,
+                    &[],
+                );
                 if let Some(follow) = culprit {
                     retained.insert(keyword);
                     if log::log_enabled!(log::Level::Debug) {
@@ -177,6 +203,7 @@ pub(super) fn build_lex_table(
             .filter(|keyword| {
                 state.terminal_entries.contains_key(*keyword) && !retained.contains(*keyword)
             })
+            .chain(word_present_guarded.iter())
             .collect();
         let tokens: TokenSet = state
             .terminal_entries
@@ -281,6 +308,53 @@ pub(super) fn build_lex_table(
         keyword_lex_table,
         large_character_sets,
     }
+}
+
+/// A token that may immediately follow `keyword` in `state` and starts with one of
+/// `chars`: a shift successor's lookahead, a token that can follow the keyword after
+/// a reduction, or one of `extras`. The word token and keywords are not considered.
+#[allow(clippy::too_many_arguments)]
+fn adjacent_follow_token(
+    parse_table: &ParseTable,
+    token_conflict_map: &TokenConflictMap,
+    keywords: &TokenSet,
+    word_token: Symbol,
+    state: &ParseState,
+    keyword: Symbol,
+    chars: &CharacterSet,
+    extras: &[Symbol],
+) -> Option<Symbol> {
+    let kw_index = usize::from(keyword.terminal_index()?);
+    let actions = parse_table
+        .action_lists
+        .get(*state.terminal_entries.get(keyword)?);
+    let starting_chars = token_conflict_map.starting_chars();
+    let reduction_follows = actions
+        .iter()
+        .any(|action| matches!(action, ParseAction::Reduce { .. }))
+        .then(|| token_conflict_map.following_tokens(kw_index));
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            ParseAction::Shift { state: after, .. } => Some(*after),
+            _ => None,
+        })
+        .flat_map(|after| {
+            parse_table.states[after as usize]
+                .terminal_entries
+                .keys()
+                .copied()
+        })
+        .chain(reduction_follows.into_iter().flat_map(TokenSet::iter))
+        .chain(extras.iter().copied())
+        .find(|&follow| {
+            follow.terminal_index().is_some_and(|index| {
+                follow != word_token
+                    && follow != keyword
+                    && !keywords.contains(follow)
+                    && starting_chars[usize::from(index)].does_intersect(chars)
+            })
+        })
 }
 
 fn word_continuation_chars(

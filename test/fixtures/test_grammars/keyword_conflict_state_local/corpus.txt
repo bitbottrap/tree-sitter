@@ -27,11 +27,12 @@ b a
 (program (word) (keyword))
 
 ================================================================================
-Literal wins over the keyword where the conflict choice is live
+Keyword precedence beats the longer literal where the conflict choice is live
+:error
 ================================================================================
 b a-
 ---
-(program (word))
+(program (word) (keyword) (ERROR (UNEXPECTED '-')))
 
 ================================================================================
 Word after a word is not split by the deferred keyword conflict
@@ -69,4 +70,4 @@ Longer literal-like input after a word falls into an error
 ================================================================================
 b a-b
 ---
-(program (word) (ERROR (word)))
+(program (word) (ERROR (keyword) (UNEXPECTED '-')) (word))

@@ -1,0 +1,22 @@
+================================================================================
+Keyword splits from a follower that could continue the word
+================================================================================
+b a(
+---
+(program (word) (keyword))
+
+================================================================================
+Keyword precedence beats the longer literal where the word token is valid
+:error
+================================================================================
+b a-
+---
+(program (word) (ERROR (keyword) (UNEXPECTED '-')))
+
+================================================================================
+Keyword precedence beats the longer literal where the word token is not valid
+:error
+================================================================================
+:a-
+---
+(program (keyword) (ERROR (UNEXPECTED '-')))

@@ -28,11 +28,12 @@ Keyword where the word token is valid
 (program (holder (keyword)) (word))
 
 ================================================================================
-Substituted keyword lets the longer literal match where the word token is valid
+Keyword precedence beats the longer literal where the word token is valid
+:error
 ================================================================================
 !#a- b
 ---
-(program (holder) (word))
+(program (holder (keyword)) (ERROR (UNEXPECTED '-')) (word))
 
 ================================================================================
 Optional keyword omitted where the word token is valid
