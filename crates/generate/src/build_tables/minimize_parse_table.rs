@@ -140,6 +140,8 @@ struct ConflictBits {
     /// Per state: the deferred keywords that the lex table keeps as raw tokens there,
     /// because a conflicting token is valid and the word token is not.
     retained_keywords: Vec<u64>,
+    /// Per token: the tokens it forms a deferred keyword pair with, in either role.
+    deferred_pair_rows: Vec<u64>,
     /// Tokens that are also external tokens.
     internal_external: Vec<u64>,
     /// The grammar's word token, as a key and as its bit in a row, if it's a terminal. An
@@ -202,6 +204,19 @@ impl ConflictBits {
             }
         }
 
+        let mut deferred_pair_rows = vec![0u64; n_terminals * row_words];
+        for &(keyword, other) in minimizer.deferred_keyword_pairs {
+            let (keyword, other) = (usize::from(keyword), usize::from(other));
+            set(
+                &mut deferred_pair_rows[keyword * row_words..(keyword + 1) * row_words],
+                other,
+            );
+            set(
+                &mut deferred_pair_rows[other * row_words..(other + 1) * row_words],
+                keyword,
+            );
+        }
+
         let mut keywords = vec![0u64; row_words];
         for symbol in minimizer.keywords.iter() {
             if let Some(index) = symbol.terminal_index() {
@@ -225,6 +240,7 @@ impl ConflictBits {
             conflict_rows,
             keywords,
             retained_keywords,
+            deferred_pair_rows,
             internal_external,
             word_token: minimizer.syntax_grammar.word_token.and_then(|word| {
                 let index = word.terminal_index()?;
@@ -243,6 +259,12 @@ impl ConflictBits {
     fn get_state_row(&self, state: usize) -> &[u64] {
         let base = state * self.row_words;
         &self.state_terminals[base..base + self.row_words]
+    }
+
+    #[inline]
+    fn get_deferred_pair_row(&self, token: usize) -> &[u64] {
+        let base = token * self.row_words;
+        &self.deferred_pair_rows[base..base + self.row_words]
     }
 
     #[inline]
@@ -722,6 +744,10 @@ enum Conflict {
     /// The token is the word token, and the other state keeps this deferred keyword as a
     /// raw token, which adding the word token would replace.
     RetainedKeyword(usize),
+    /// The token forms a deferred keyword pair with this terminal, which the other state
+    /// has without the word token: adding it would make the lex table retain a keyword
+    /// that the other state substitutes.
+    DeferredKeywordPair(usize),
 }
 
 struct Minimizer<'a> {
@@ -1229,6 +1255,22 @@ impl Minimizer<'_> {
                 ));
             }
         }
+        if new_token_is_terminal && let Some((_, word)) = bits.word_token {
+            let right_terminal_bits = bits.get_state_row(right_state.id as usize);
+            if right_terminal_bits[word / 64] & (1 << (word % 64)) == 0
+                && let Some((w, mates)) = bits
+                    .get_deferred_pair_row(new_token_index)
+                    .iter()
+                    .zip(right_terminal_bits)
+                    .map(|(pairs, terminals)| pairs & terminals)
+                    .enumerate()
+                    .find(|(_, mates)| *mates != 0)
+            {
+                return Some(Conflict::DeferredKeywordPair(
+                    w * 64 + mates.trailing_zeros() as usize,
+                ));
+            }
+        }
         let new_token_is_keyword = bits.word_token.is_some()
             && if new_token_is_terminal {
                 bits.keywords[new_token_index / 64] & (1 << (new_token_index % 64)) != 0
@@ -1295,6 +1337,11 @@ impl Minimizer<'_> {
             ),
             Conflict::Lexical(terminal) => debug!(
                 "split states {id1} {id2} - token {} conflicts with {}",
+                self.symbol_name(token.symbol(self.indexer)),
+                self.symbol_name(Symbol::terminal(terminal)),
+            ),
+            Conflict::DeferredKeywordPair(terminal) => debug!(
+                "split states {id1} {id2} - token {} would make {} a retained keyword pair",
                 self.symbol_name(token.symbol(self.indexer)),
                 self.symbol_name(Symbol::terminal(terminal)),
             ),
